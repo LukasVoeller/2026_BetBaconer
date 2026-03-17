@@ -20,29 +20,62 @@ struct TipWorkflowService {
         finishedResults: [FinishedMatch],
         upcomingMatches: [UpcomingMatch],
         bettingOdds: [BettingOdds] = [],
+        overUnderOdds: [OverUnderOdds] = [],
+        bttsOdds: [BTTSOdds] = [],
+        handicapOdds: [HandicapOdds] = [],
         playerAbsences: [PlayerAbsence] = [],
         teamMetadata: [TeamMetadata] = [],
         matchWeather: [MatchWeather] = [],
+        matchReferees: [MatchReferee] = [],
+        teamExtraFixtures: [TeamExtraFixture] = [],
+        teamShotsStats: [TeamSeasonShots] = [],
         tipHistory: [TipGenerationRecord] = [],
         learningState: LearningState? = nil
     ) -> String {
         let standings = buildStandings(from: finishedResults)
         let restDaysByTeam = buildRestDaysByTeam(finishedResults: finishedResults, upcomingMatches: upcomingMatches)
+        let formTableSection = recentFormTable(from: finishedResults)
         let metadataByTeam = Dictionary(uniqueKeysWithValues: teamMetadata.map { (normalizeTeamName($0.teamName), $0) })
         let weatherByMatch = Dictionary(uniqueKeysWithValues: matchWeather.map { ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0) })
 
-        // --- Kompakte Teamprofile (nur Teams im naechsten Spieltag) ---
-        let teamsInFocus = Set(upcomingMatches.flatMap { [$0.heim, $0.gast] })
-        let teamStatsSection = teamsInFocus.sorted()
-            .map { teamProfile(team: $0, results: finishedResults, standings: standings, restDaysByTeam: restDaysByTeam, metadata: metadataByTeam[normalizeTeamName($0)]) }
-            .joined(separator: "\n")
-
-        // --- Spielplan mit Tabellenkontext, Resttagen, H2H und Quoten ---
+        // --- Lookup maps ---
         let normalizedOddsMap = Dictionary(
             uniqueKeysWithValues: bettingOdds.map {
                 ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
             }
         )
+        let normalizedOUMap = Dictionary(
+            uniqueKeysWithValues: overUnderOdds.map {
+                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
+            }
+        )
+        let normalizedBTTSMap = Dictionary(
+            uniqueKeysWithValues: bttsOdds.map {
+                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
+            }
+        )
+        let normalizedHandicapMap = Dictionary(
+            uniqueKeysWithValues: handicapOdds.map {
+                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
+            }
+        )
+        let normalizedRefereeMap = Dictionary(
+            uniqueKeysWithValues: matchReferees.map {
+                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0.referee)
+            }
+        )
+        let extraFixturesByTeam = Dictionary(grouping: teamExtraFixtures) { normalizeTeamName($0.teamName) }
+        let shotsByTeam = Dictionary(
+            uniqueKeysWithValues: teamShotsStats.map { (normalizeTeamName($0.teamName), $0) }
+        )
+
+        // --- Kompakte Teamprofile (nur Teams im naechsten Spieltag) ---
+        let teamsInFocus = Set(upcomingMatches.flatMap { [$0.heim, $0.gast] })
+        let teamStatsSection = teamsInFocus.sorted()
+            .map { teamProfile(team: $0, results: finishedResults, standings: standings, restDaysByTeam: restDaysByTeam, metadata: metadataByTeam[normalizeTeamName($0)], shotsStats: shotsByTeam[normalizeTeamName($0)]) }
+            .joined(separator: "\n")
+
+        // --- Spielplan mit Tabellenkontext, Resttagen, H2H und Quoten ---
         let upcomingLines = upcomingMatches.map { m -> String in
             var blocks = ["\(m.spieltag). Spieltag | \(m.heim) vs. \(m.gast) (\(m.datum))"]
             let homeStanding = standings[normalizeTeamName(m.heim)]
@@ -86,6 +119,69 @@ struct TipWorkflowService {
                     )
                 }
                 blocks.append(oddsBlock)
+            }
+            let matchKey = "\(normalizeTeamName(m.heim))|\(normalizeTeamName(m.gast))"
+            // O/U and BTTS
+            var tormarktLine = ""
+            if let ou = normalizedOUMap[matchKey] {
+                if let over = Double(ou.overQuote), let under = Double(ou.underQuote), over > 0, under > 0 {
+                    let invOU = 1/over + 1/under
+                    let pOver = (1/over) / invOU * 100
+                    let pUnder = (1/under) / invOU * 100
+                    tormarktLine = String(format: "  Tormarkt: O/U %.1f → Over %@ (%.0f%%) / Under %@ (%.0f%%)",
+                        ou.line, ou.overQuote, pOver, ou.underQuote, pUnder)
+                } else {
+                    tormarktLine = "  Tormarkt: O/U \(ou.line) → Over \(ou.overQuote) / Under \(ou.underQuote)"
+                }
+                if let btts = normalizedBTTSMap[matchKey] {
+                    var bttsAppend = " | BTTS Ja \(btts.yesQuote) / Nein \(btts.noQuote)"
+                    if let yes = Double(btts.yesQuote), let no = Double(btts.noQuote), yes > 0, no > 0 {
+                        let invBTTS = 1/yes + 1/no
+                        let pYes = (1/yes) / invBTTS * 100
+                        let pNo = (1/no) / invBTTS * 100
+                        bttsAppend = String(format: " | BTTS Ja %@ (%.0f%%) / Nein %@ (%.0f%%)",
+                            btts.yesQuote, pYes, btts.noQuote, pNo)
+                    }
+                    tormarktLine += bttsAppend
+                }
+                blocks.append(tormarktLine)
+            } else if let btts = normalizedBTTSMap[matchKey] {
+                var bttsLine = "  BTTS Ja \(btts.yesQuote) / Nein \(btts.noQuote)"
+                if let yes = Double(btts.yesQuote), let no = Double(btts.noQuote), yes > 0, no > 0 {
+                    let invBTTS = 1/yes + 1/no
+                    let pYes = (1/yes) / invBTTS * 100
+                    let pNo = (1/no) / invBTTS * 100
+                    bttsLine = String(format: "  BTTS Ja %@ (%.0f%%) / Nein %@ (%.0f%%)",
+                        btts.yesQuote, pYes, btts.noQuote, pNo)
+                }
+                blocks.append(bttsLine)
+            }
+            // Handicap
+            if let hcp = normalizedHandicapMap[matchKey] {
+                let homeSign = hcp.homeHandicap >= 0 ? "+" : ""
+                let awaySign = hcp.awayHandicap >= 0 ? "+" : ""
+                blocks.append("  Handicap: \(m.heim) (\(homeSign)\(hcp.homeHandicap)) \(hcp.homeQuote) / \(m.gast) (\(awaySign)\(hcp.awayHandicap)) \(hcp.awayQuote)")
+            }
+            // Schiedsrichter
+            if let referee = normalizedRefereeMap[matchKey] {
+                blocks.append("  Schiedsrichter: \(referee)")
+            }
+            // Europaeische/Pokal-Belastung
+            let homeExtraKey = normalizeTeamName(m.heim)
+            let awayExtraKey = normalizeTeamName(m.gast)
+            let homeExtras = extraFixturesByTeam[homeExtraKey] ?? []
+            let awayExtras = extraFixturesByTeam[awayExtraKey] ?? []
+            if !homeExtras.isEmpty {
+                for extra in homeExtras {
+                    let homeAway = extra.isHome ? "Heim" : "Auswaerts"
+                    blocks.append("  Zusatzbelastung \(m.heim): \(extra.competition) vs. \(extra.opponent) (\(homeAway))")
+                }
+            }
+            if !awayExtras.isEmpty {
+                for extra in awayExtras {
+                    let homeAway = extra.isHome ? "Heim" : "Auswaerts"
+                    blocks.append("  Zusatzbelastung \(m.gast): \(extra.competition) vs. \(extra.opponent) (\(homeAway))")
+                }
             }
             return blocks.joined(separator: "\n")
         }.joined(separator: "\n\n")
@@ -149,6 +245,8 @@ METHODIK (intern, nicht im Output):
    - Heim-/Auswaertsform separat beruecksichtigen: Tore, Gegentore, Punkte pro Spiel
    - Tabellenkontext, Tor-Differenz und Resttage als Zusatzsignale einbeziehen
    - Bundesliga-Heimvorteil explizit einpreisen (Faktor ~1.25)
+   - Formtabelle der letzten 6 Spieltage als kompaktes Normierungssignal nutzen
+   Wenn Schussdaten verfuegbar: Angriffsstärke = Ø ShotsOnGoal × Verwertungsrate statt reiner Tore/Spiel.
 
 2. VERLETZUNGEN & SPERREN
    Reduziere Angriffs- oder Defensivstaerke des betroffenen Teams entsprechend der Spielerbedeutung.
@@ -166,6 +264,7 @@ METHODIK (intern, nicht im Output):
 
 6. REST & BELASTUNG
    Wenige Resttage koennen Pressing, Intensitaet und Torerwartung beeinflussen. Werte sehr kurze Regeneration als leicht negatives Signal.
+   Europaeische/Pokal-Belastung unter der Woche (CL/EL/ECL/DFB-Pokal) ist ein deutlich staerkeres negatives Signal als reine Liga-Resttage.
 
 7. WETTER & SPIELORT
    Beruecksichtige Wetter nur moderat: starker Regen, Wind oder winterliche Bedingungen koennen Tempo und Torerwartung senken.
@@ -189,6 +288,11 @@ REALISMUS-REGELN:
 - Unentschieden treten in ~25% aller Spiele auf – nicht zu selten waehlen
 - Prognosen zur Liga-Norm hin kalibrieren, extreme Ausreisser vermeiden
 
+\(formTableSection.isEmpty ? "" : """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+\(formTableSection)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+""")
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TEAMSTATISTIKEN (Saison \(season), gewichtet nach Aktualitaet):
 \(teamStatsSection)
@@ -279,7 +383,7 @@ OUTPUT-ANFORDERUNGEN:
 
     // MARK: - Private helpers
 
-    private func teamProfile(team: String, results: [FinishedMatch], standings: [String: TeamStanding], restDaysByTeam: [String: Int], metadata: TeamMetadata?) -> String {
+    private func teamProfile(team: String, results: [FinishedMatch], standings: [String: TeamStanding], restDaysByTeam: [String: Int], metadata: TeamMetadata?, shotsStats: TeamSeasonShots? = nil) -> String {
         let all = results
             .filter { $0.heim == team || $0.gast == team }
             .sorted { $0.spieltag > $1.spieltag }
@@ -359,7 +463,9 @@ OUTPUT-ANFORDERUNGEN:
   Gewichtete Kernwerte: Pkt/Sp \(f(avgPts)) | Tore/Sp \(f(avgGF)) | Gegentore/Sp \(f(avgGA)) | Tor-Diff/Sp \(f(avgGD))
   Heim (\(home.count) Sp.): Form \(homeForm.isEmpty ? "–" : homeForm) | Tore \(f(hGF)) | Gegentore \(f(hGA)) | Pkt/Sp \(f(hPts))
   Auswaerts (\(away.count) Sp.): Form \(awayForm.isEmpty ? "–" : awayForm) | Tore \(f(aGF)) | Gegentore \(f(aGA)) | Pkt/Sp \(f(aPts))
-\(restText)
+\(restText)\(shotsStats.map { s in
+    "\n  Schuesse aufs Tor/Sp.: \(String(format: "%.1f", s.shotsOnGoalPerGameHome)) (Heim) | \(String(format: "%.1f", s.shotsOnGoalPerGameAway)) (Auswaerts) | Verwertung: \(String(format: "%.1f%%", s.shotsOnGoalConversionHome * 100)) (H) \(String(format: "%.1f%%", s.shotsOnGoalConversionAway * 100)) (A)"
+} ?? "")
 """
     }
 
@@ -394,6 +500,65 @@ OUTPUT-ANFORDERUNGEN:
             let displayTeam = absences.first?.teamName ?? team
             return "- \(displayTeam): \(absences.count) Ausfaelle, davon \(injuries.count) Verletzung(en), \(suspensions.count) Sperre(n). Wichtigste Eintraege: \(highlighted)"
         }
+    }
+
+    private func recentFormTable(from results: [FinishedMatch], lastN: Int = 6) -> String {
+        guard !results.isEmpty else { return "" }
+
+        let allSpieldags = Set(results.map { $0.spieltag }).sorted().suffix(lastN)
+        guard allSpieldags.count >= 3 else { return "" }
+
+        let relevantMatches = results.filter { allSpieldags.contains($0.spieltag) }
+
+        var points: [String: Int] = [:]
+        var goalsFor: [String: Int] = [:]
+        var goalsAgainst: [String: Int] = [:]
+        var displayNames: [String: String] = [:]
+
+        for m in relevantMatches {
+            let homeKey = normalizeTeamName(m.heim)
+            let awayKey = normalizeTeamName(m.gast)
+            displayNames[homeKey] = m.heim
+            displayNames[awayKey] = m.gast
+
+            goalsFor[homeKey, default: 0] += m.toreHeim
+            goalsFor[awayKey, default: 0] += m.toreGast
+            goalsAgainst[homeKey, default: 0] += m.toreGast
+            goalsAgainst[awayKey, default: 0] += m.toreHeim
+
+            if m.toreHeim > m.toreGast {
+                points[homeKey, default: 0] += 3
+            } else if m.toreHeim == m.toreGast {
+                points[homeKey, default: 0] += 1
+                points[awayKey, default: 0] += 1
+            } else {
+                points[awayKey, default: 0] += 3
+            }
+        }
+
+        let sorted = displayNames.keys.sorted {
+            let pA = points[$0, default: 0]; let pB = points[$1, default: 0]
+            if pA != pB { return pA > pB }
+            let gdA = (goalsFor[$0] ?? 0) - (goalsAgainst[$0] ?? 0)
+            let gdB = (goalsFor[$1] ?? 0) - (goalsAgainst[$1] ?? 0)
+            if gdA != gdB { return gdA > gdB }
+            return $0 < $1
+        }
+
+        let lines = sorted.enumerated().map { (i, key) -> String in
+            let name = displayNames[key] ?? key
+            let pts = points[key, default: 0]
+            let gf = goalsFor[key, default: 0]
+            let ga = goalsAgainst[key, default: 0]
+            let gd = gf - ga
+            let gdStr = gd >= 0 ? "+\(gd)" : "\(gd)"
+            return "\(i + 1). \(name) | \(pts) Pkt | \(gf):\(ga) | \(gdStr)"
+        }
+
+        return """
+FORMTABELLE LETZTE \(allSpieldags.count) SPIELTAGE:
+\(lines.joined(separator: "\n"))
+"""
     }
 
     private func buildStandings(from results: [FinishedMatch]) -> [String: TeamStanding] {

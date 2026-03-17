@@ -164,6 +164,8 @@ public struct LearningState: Codable, Identifiable, Sendable {
     public var actualHomeWinRate: Double
     public var actualDrawRate: Double
     public var actualAwayWinRate: Double
+    public var brierScore: Double
+    public var marketBrierScore: Double
 
     public static let empty = LearningState(
         id: UUID(),
@@ -187,7 +189,9 @@ public struct LearningState: Codable, Identifiable, Sendable {
         predictedAwayWinRate: 0,
         actualHomeWinRate: 0,
         actualDrawRate: 0,
-        actualAwayWinRate: 0
+        actualAwayWinRate: 0,
+        brierScore: 0,
+        marketBrierScore: 0
     )
 
     public init(
@@ -212,7 +216,9 @@ public struct LearningState: Codable, Identifiable, Sendable {
         predictedAwayWinRate: Double,
         actualHomeWinRate: Double,
         actualDrawRate: Double,
-        actualAwayWinRate: Double
+        actualAwayWinRate: Double,
+        brierScore: Double = 0,
+        marketBrierScore: Double = 0
     ) {
         self.id = id
         self.updatedAt = updatedAt
@@ -236,17 +242,66 @@ public struct LearningState: Codable, Identifiable, Sendable {
         self.actualHomeWinRate = actualHomeWinRate
         self.actualDrawRate = actualDrawRate
         self.actualAwayWinRate = actualAwayWinRate
+        self.brierScore = brierScore
+        self.marketBrierScore = marketBrierScore
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, updatedAt, sampleSize, homeBias, drawBias, awayBias
+        case avgHomeGoalOverprediction, avgAwayGoalOverprediction
+        case marketAlignmentScore, highScoreOverpredictionBias
+        case correctionSummaryText, weightsJSON
+        case tendencyHitRate, exactHitRate, goalDiffHitRate, averageTotalAbsGoalError
+        case predictedHomeWinRate, predictedDrawRate, predictedAwayWinRate
+        case actualHomeWinRate, actualDrawRate, actualAwayWinRate
+        case brierScore, marketBrierScore
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        sampleSize = try c.decode(Int.self, forKey: .sampleSize)
+        homeBias = try c.decode(Double.self, forKey: .homeBias)
+        drawBias = try c.decode(Double.self, forKey: .drawBias)
+        awayBias = try c.decode(Double.self, forKey: .awayBias)
+        avgHomeGoalOverprediction = try c.decode(Double.self, forKey: .avgHomeGoalOverprediction)
+        avgAwayGoalOverprediction = try c.decode(Double.self, forKey: .avgAwayGoalOverprediction)
+        marketAlignmentScore = try c.decode(Double.self, forKey: .marketAlignmentScore)
+        highScoreOverpredictionBias = try c.decode(Double.self, forKey: .highScoreOverpredictionBias)
+        correctionSummaryText = try c.decode(String.self, forKey: .correctionSummaryText)
+        weightsJSON = try c.decode(String.self, forKey: .weightsJSON)
+        tendencyHitRate = try c.decode(Double.self, forKey: .tendencyHitRate)
+        exactHitRate = try c.decode(Double.self, forKey: .exactHitRate)
+        goalDiffHitRate = try c.decode(Double.self, forKey: .goalDiffHitRate)
+        averageTotalAbsGoalError = try c.decode(Double.self, forKey: .averageTotalAbsGoalError)
+        predictedHomeWinRate = try c.decode(Double.self, forKey: .predictedHomeWinRate)
+        predictedDrawRate = try c.decode(Double.self, forKey: .predictedDrawRate)
+        predictedAwayWinRate = try c.decode(Double.self, forKey: .predictedAwayWinRate)
+        actualHomeWinRate = try c.decode(Double.self, forKey: .actualHomeWinRate)
+        actualDrawRate = try c.decode(Double.self, forKey: .actualDrawRate)
+        actualAwayWinRate = try c.decode(Double.self, forKey: .actualAwayWinRate)
+        brierScore = (try? c.decode(Double.self, forKey: .brierScore)) ?? 0
+        marketBrierScore = (try? c.decode(Double.self, forKey: .marketBrierScore)) ?? 0
     }
 
     public func promptSummary(minSampleSize: Int) -> String? {
         guard sampleSize >= minSampleSize, !correctionSummaryText.isEmpty else { return nil }
-        return """
+        var summary = """
 
 
 Selbstlernende Korrekturen aus bisherigen Vorhersagen:
 \(correctionSummaryText)
-Korrigiere diese Verzerrungen in der aktuellen Analyse.
 """
+        if brierScore > 0 {
+            if brierScore > marketBrierScore + 0.05 {
+                summary += String(format: "\n- Brier Score (BS=%.3f): Vorhersagen schlechter kalibriert als Markt-Baseline (%.3f). Marktquoten staerker gewichten.", brierScore, marketBrierScore)
+            } else {
+                summary += String(format: "\n- Brier Score (BS=%.3f): Vorhersagen besser oder gleichwertig zum Markt (%.3f) kalibriert.", brierScore, marketBrierScore)
+            }
+        }
+        summary += "\nKorrigiere diese Verzerrungen in der aktuellen Analyse."
+        return summary
     }
 }
 

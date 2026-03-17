@@ -102,6 +102,58 @@ struct KicktippMatchField: Codable, Identifiable, Hashable {
     var id: String { "\(heim)-\(gast)-\(heimField)-\(gastField)" }
 }
 
+struct OverUnderOdds: Codable, Identifiable, Hashable {
+    let heim: String
+    let gast: String
+    let line: Double          // typisch 2.5
+    let overQuote: String
+    let underQuote: String
+    var id: String { "\(heim)-\(gast)" }
+}
+
+struct BTTSOdds: Codable, Identifiable, Hashable {
+    let heim: String
+    let gast: String
+    let yesQuote: String
+    let noQuote: String
+    var id: String { "\(heim)-\(gast)" }
+}
+
+struct HandicapOdds: Codable, Identifiable, Hashable {
+    let heim: String
+    let gast: String
+    let homeHandicap: Double  // z. B. -0.5
+    let homeQuote: String
+    let awayHandicap: Double  // z. B. +0.5
+    let awayQuote: String
+    var id: String { "\(heim)-\(gast)" }
+}
+
+struct MatchReferee: Identifiable, Hashable {
+    let heim: String
+    let gast: String
+    let referee: String
+    var id: String { "\(heim)-\(gast)" }
+}
+
+struct TeamExtraFixture: Identifiable, Hashable {
+    let teamName: String
+    let competition: String   // "Champions League", "Europa League", "DFB-Pokal" etc.
+    let opponent: String
+    let date: String          // ISO8601
+    let isHome: Bool
+    var id: String { "\(teamName)-\(competition)-\(date)" }
+}
+
+struct TeamSeasonShots: Identifiable, Hashable {
+    let teamName: String
+    let shotsOnGoalPerGameHome: Double
+    let shotsOnGoalPerGameAway: Double
+    let shotsOnGoalConversionHome: Double  // goals / shots on goal (home)
+    let shotsOnGoalConversionAway: Double  // goals / shots on goal (away)
+    var id: String { teamName }
+}
+
 struct TipGenerationRecord: Codable, Identifiable {
     var id: UUID
     let timestamp: Date

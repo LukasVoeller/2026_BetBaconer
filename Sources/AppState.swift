@@ -17,6 +17,7 @@ final class AppState {
 
     private enum SecretKeys {
         static let theOddsAPIKey = "theOddsAPIKey"
+        static let apiFootballAPIKey = "apiFootballAPIKey"
     }
 
     // MARK: - State
@@ -48,6 +49,20 @@ final class AppState {
             }
         }
     }
+    var apiFootballAPIKey: String = "" {
+        didSet {
+            do {
+                let trimmed = apiFootballAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    try secretStore.deleteSecret(account: SecretKeys.apiFootballAPIKey)
+                } else {
+                    try secretStore.saveSecret(trimmed, account: SecretKeys.apiFootballAPIKey)
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
     var codexPath: String = UserDefaults.standard.string(forKey: Keys.codexPath) ?? "/opt/homebrew/bin/codex" {
         didSet { UserDefaults.standard.set(codexPath, forKey: Keys.codexPath) }
     }
@@ -67,9 +82,15 @@ final class AppState {
         orderedTips(suggestedTips)
     }
     var bettingOdds: [BettingOdds] = []
+    var overUnderOdds: [OverUnderOdds] = []
+    var bttsOdds: [BTTSOdds] = []
+    var handicapOdds: [HandicapOdds] = []
     var playerAbsences: [PlayerAbsence] = []
     var teamMetadata: [TeamMetadata] = []
     var matchWeather: [MatchWeather] = []
+    var matchReferees: [MatchReferee] = []
+    var teamExtraFixtures: [TeamExtraFixture] = []
+    var teamShotsStats: [TeamSeasonShots] = []
     var nextSpieltag: Int?
     var tipHistory: [TipGenerationRecord] = [] {
         didSet {
@@ -112,6 +133,10 @@ final class AppState {
         TheOddsAPIService(apiKey: theOddsAPIKey)
     }
 
+    private var apiFootballService: APIFootballService {
+        APIFootballService(apiKey: apiFootballAPIKey)
+    }
+
     // MARK: - Init
 
     init() {
@@ -122,6 +147,14 @@ final class AppState {
         } catch {
             theOddsAPIKey = ProcessInfo.processInfo.environment["THE_ODDS_API_KEY"] ?? ""
             errorMessage = error.localizedDescription
+        }
+
+        do {
+            apiFootballAPIKey = try secretStore.loadSecret(account: SecretKeys.apiFootballAPIKey)
+                ?? ProcessInfo.processInfo.environment["API_FOOTBALL_KEY"]
+                ?? ""
+        } catch {
+            apiFootballAPIKey = ProcessInfo.processInfo.environment["API_FOOTBALL_KEY"] ?? ""
         }
 
         do {
@@ -174,9 +207,15 @@ final class AppState {
 
             infoMessage = "Lese Wettquoten..."
             bettingOdds = []
+            overUnderOdds = []
+            bttsOdds = []
+            handicapOdds = []
             do {
-                let apiOdds = try await oddsAPIService.fetchBundesligaOdds()
-                bettingOdds = remapOddsToUpcomingMatches(apiOdds, upcomingMatches: upcoming)
+                let allMarketOdds = try await oddsAPIService.fetchAllMarketOdds()
+                bettingOdds = remapOddsToUpcomingMatches(allMarketOdds.h2h, upcomingMatches: upcoming)
+                overUnderOdds = remapOverUnderToUpcomingMatches(allMarketOdds.overUnder, upcomingMatches: upcoming)
+                bttsOdds = remapBTTSToUpcomingMatches(allMarketOdds.btts, upcomingMatches: upcoming)
+                handicapOdds = remapHandicapToUpcomingMatches(allMarketOdds.handicap, upcomingMatches: upcoming)
                 appendConsole("[Quoten] \(bettingOdds.count)/\(upcoming.count) Quoten aus The Odds API geladen.\n")
             } catch {
                 appendConsole("[Quoten] The Odds API fehlgeschlagen: \(error.localizedDescription)\n")
@@ -203,7 +242,7 @@ final class AppState {
                 appendConsole("[Quoten] Nach Fallback insgesamt \(bettingOdds.count)/\(upcoming.count) Quoten verfuegbar.\n")
             }
 
-            try validateWorkflowInputs(upcomingMatches: upcoming)
+            validateWorkflowInputs(upcomingMatches: upcoming)
 
             infoMessage = "Lade Team- und Stadiondaten..."
             do {
@@ -224,6 +263,23 @@ final class AppState {
                 playerAbsences = []
             }
 
+            infoMessage = "Lade API-Football Daten..."
+            if !apiFootballAPIKey.isEmpty {
+                do {
+                    let teamsInFocus = Set(upcoming.flatMap { [$0.heim, $0.gast] })
+                    async let refs = apiFootballService.fetchReferees(season: seasonValue)
+                    async let extras = apiFootballService.fetchUpcomingExtraFixtures(season: seasonValue, teamsInFocus: teamsInFocus)
+                    async let shots = apiFootballService.fetchTeamShotsStats(season: seasonValue)
+                    (matchReferees, teamExtraFixtures, teamShotsStats) = try await (refs, extras, shots)
+                    appendConsole("[API-Football] \(matchReferees.count) Schiedsrichter, \(teamExtraFixtures.count) Extra-Fixtures, \(teamShotsStats.count) Shot-Stats geladen.\n")
+                } catch {
+                    appendConsole("[API-Football] Fehler: \(error.localizedDescription)\n")
+                    matchReferees = []; teamExtraFixtures = []; teamShotsStats = []
+                }
+            } else {
+                appendConsole("[API-Football] Kein Key – Schiedsrichter/Belastung/Shots uebersprungen.\n")
+            }
+
             infoMessage = "Lade Wetterdaten..."
             do {
                 matchWeather = try await weatherService.fetchWeather(for: upcomingMatches, teamMetadata: teamMetadata)
@@ -239,9 +295,15 @@ final class AppState {
                 finishedResults: finishedResults,
                 upcomingMatches: upcomingMatches,
                 bettingOdds: bettingOdds,
+                overUnderOdds: overUnderOdds,
+                bttsOdds: bttsOdds,
+                handicapOdds: handicapOdds,
                 playerAbsences: playerAbsences,
                 teamMetadata: teamMetadata,
                 matchWeather: matchWeather,
+                matchReferees: matchReferees,
+                teamExtraFixtures: teamExtraFixtures,
+                teamShotsStats: teamShotsStats,
                 tipHistory: tipHistory,
                 learningState: learningState
             )
@@ -544,6 +606,39 @@ final class AppState {
                 quoteUnentschieden: matchedOdds.quoteUnentschieden,
                 quoteGast: matchedOdds.quoteGast
             )
+        }
+    }
+
+    private func remapOverUnderToUpcomingMatches(_ source: [OverUnderOdds], upcomingMatches: [UpcomingMatch]) -> [OverUnderOdds] {
+        var remaining = source
+        return upcomingMatches.compactMap { match in
+            guard let index = remaining.firstIndex(where: {
+                teamNamesLikelyMatch($0.heim, match.heim) && teamNamesLikelyMatch($0.gast, match.gast)
+            }) else { return nil }
+            let odds = remaining.remove(at: index)
+            return OverUnderOdds(heim: match.heim, gast: match.gast, line: odds.line, overQuote: odds.overQuote, underQuote: odds.underQuote)
+        }
+    }
+
+    private func remapBTTSToUpcomingMatches(_ source: [BTTSOdds], upcomingMatches: [UpcomingMatch]) -> [BTTSOdds] {
+        var remaining = source
+        return upcomingMatches.compactMap { match in
+            guard let index = remaining.firstIndex(where: {
+                teamNamesLikelyMatch($0.heim, match.heim) && teamNamesLikelyMatch($0.gast, match.gast)
+            }) else { return nil }
+            let odds = remaining.remove(at: index)
+            return BTTSOdds(heim: match.heim, gast: match.gast, yesQuote: odds.yesQuote, noQuote: odds.noQuote)
+        }
+    }
+
+    private func remapHandicapToUpcomingMatches(_ source: [HandicapOdds], upcomingMatches: [UpcomingMatch]) -> [HandicapOdds] {
+        var remaining = source
+        return upcomingMatches.compactMap { match in
+            guard let index = remaining.firstIndex(where: {
+                teamNamesLikelyMatch($0.heim, match.heim) && teamNamesLikelyMatch($0.gast, match.gast)
+            }) else { return nil }
+            let odds = remaining.remove(at: index)
+            return HandicapOdds(heim: match.heim, gast: match.gast, homeHandicap: odds.homeHandicap, homeQuote: odds.homeQuote, awayHandicap: odds.awayHandicap, awayQuote: odds.awayQuote)
         }
     }
 
@@ -921,9 +1016,9 @@ final class AppState {
         return Double(value.replacingOccurrences(of: ",", with: "."))
     }
 
-    private func validateWorkflowInputs(upcomingMatches: [UpcomingMatch]) throws {
-        guard bettingOdds.count == upcomingMatches.count else {
-            throw ValidationError.incompleteOddsCoverage(expected: upcomingMatches.count, actual: bettingOdds.count)
+    private func validateWorkflowInputs(upcomingMatches: [UpcomingMatch]) {
+        if bettingOdds.count < upcomingMatches.count {
+            appendConsole("[Quoten] Warnung: Nur \(bettingOdds.count)/\(upcomingMatches.count) Quoten verfuegbar – Workflow laeuft ohne vollstaendige Quotendaten.\n")
         }
     }
 

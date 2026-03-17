@@ -78,7 +78,7 @@ struct APIFootballService {
             throw APIFootballError.missingKey
         }
 
-        let fixtures = try await fetchNextFixtures(season: season, next: next)
+        let fixtures = try await fetchNextFixtures(leagueId: bundesligaLeagueID, season: season, next: next)
         guard !fixtures.isEmpty else { return [] }
 
         var odds: [BettingOdds] = []
@@ -98,17 +98,131 @@ struct APIFootballService {
         return odds
     }
 
+    func fetchReferees(season: Int, next: Int = 9) async throws -> [MatchReferee] {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIFootballError.missingKey
+        }
+        let fixtures = try await fetchNextFixtures(leagueId: bundesligaLeagueID, season: season, next: next)
+        return fixtures.compactMap { wrapper in
+            guard let referee = wrapper.fixture.referee, !referee.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            return MatchReferee(
+                heim: wrapper.teams.home.name,
+                gast: wrapper.teams.away.name,
+                referee: referee
+            )
+        }
+    }
+
+    func fetchUpcomingExtraFixtures(season: Int, teamsInFocus: Set<String>) async throws -> [TeamExtraFixture] {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIFootballError.missingKey
+        }
+
+        let extraLeagues: [(id: String, name: String)] = [
+            ("2", "Champions League"),
+            ("3", "Europa League"),
+            ("848", "Conference League"),
+            ("81", "DFB-Pokal")
+        ]
+
+        var result: [TeamExtraFixture] = []
+        for league in extraLeagues {
+            guard let fixtures = try? await fetchNextFixtures(leagueId: league.id, season: season, next: 9) else {
+                continue
+            }
+            for fixture in fixtures {
+                let homeName = fixture.teams.home.name
+                let awayName = fixture.teams.away.name
+                let homeMatches = teamsInFocus.first(where: { teamNamesLikelyMatch($0, homeName) }) != nil
+                let awayMatches = teamsInFocus.first(where: { teamNamesLikelyMatch($0, awayName) }) != nil
+
+                if homeMatches {
+                    let teamName = teamsInFocus.first(where: { teamNamesLikelyMatch($0, homeName) }) ?? homeName
+                    result.append(TeamExtraFixture(
+                        teamName: teamName,
+                        competition: league.name,
+                        opponent: awayName,
+                        date: fixture.fixture.date ?? "",
+                        isHome: true
+                    ))
+                }
+                if awayMatches {
+                    let teamName = teamsInFocus.first(where: { teamNamesLikelyMatch($0, awayName) }) ?? awayName
+                    result.append(TeamExtraFixture(
+                        teamName: teamName,
+                        competition: league.name,
+                        opponent: homeName,
+                        date: fixture.fixture.date ?? "",
+                        isHome: false
+                    ))
+                }
+            }
+        }
+        return result
+    }
+
+    func fetchTeamShotsStats(season: Int) async throws -> [TeamSeasonShots] {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return []
+        }
+
+        var teamsComponents = URLComponents(string: "https://v3.football.api-sports.io/teams")!
+        teamsComponents.queryItems = [
+            .init(name: "league", value: bundesligaLeagueID),
+            .init(name: "season", value: "\(season)"),
+        ]
+        let teamsData = try await get(teamsComponents.url!)
+        let teamsDecoded = try JSONDecoder().decode(TeamsListResponse.self, from: teamsData)
+        let teams = teamsDecoded.response.map { $0.team }
+
+        var result: [TeamSeasonShots] = []
+        for team in teams {
+            var statsComponents = URLComponents(string: "https://v3.football.api-sports.io/teams/statistics")!
+            statsComponents.queryItems = [
+                .init(name: "league", value: bundesligaLeagueID),
+                .init(name: "season", value: "\(season)"),
+                .init(name: "team", value: "\(team.id)"),
+            ]
+            guard let statsData = try? await get(statsComponents.url!) else { continue }
+            guard let stats = try? JSONDecoder().decode(TeamStatsResponse.self, from: statsData) else { continue }
+
+            let data = stats.response
+            let playedHome = max(1, data.fixtures.played.home)
+            let playedAway = max(1, data.fixtures.played.away)
+            let goalsHome = data.goals.for.total.home
+            let goalsAway = data.goals.for.total.away
+            let shotsOnHome = data.shots?.on?.total?.home ?? 0
+            let shotsOnAway = data.shots?.on?.total?.away ?? 0
+
+            let soPerGameHome = Double(shotsOnHome) / Double(playedHome)
+            let soPerGameAway = Double(shotsOnAway) / Double(playedAway)
+            let convHome = shotsOnHome > 0 ? Double(goalsHome) / Double(shotsOnHome) : 0
+            let convAway = shotsOnAway > 0 ? Double(goalsAway) / Double(shotsOnAway) : 0
+
+            result.append(TeamSeasonShots(
+                teamName: team.name,
+                shotsOnGoalPerGameHome: soPerGameHome,
+                shotsOnGoalPerGameAway: soPerGameAway,
+                shotsOnGoalConversionHome: convHome,
+                shotsOnGoalConversionAway: convAway
+            ))
+        }
+        return result
+    }
+
     // MARK: - Private helpers
 
     private func fetchNextFixtureIDs(season: Int, next: Int) async throws -> [Int] {
-        let fixtures = try await fetchNextFixtures(season: season, next: next)
+        let fixtures = try await fetchNextFixtures(leagueId: bundesligaLeagueID, season: season, next: next)
         return fixtures.map { $0.fixture.id }
     }
 
-    private func fetchNextFixtures(season: Int, next: Int) async throws -> [FixtureWrapper] {
+    private func fetchNextFixtures(leagueId: String, season: Int, next: Int) async throws -> [FixtureWrapper] {
         var components = URLComponents(string: "https://v3.football.api-sports.io/fixtures")!
         components.queryItems = [
-            .init(name: "league", value: bundesligaLeagueID),
+            .init(name: "league", value: leagueId),
             .init(name: "season", value: "\(season)"),
             .init(name: "next", value: "\(next)"),
         ]
@@ -200,6 +314,8 @@ private struct FixtureWrapper: Decodable {
 
 private struct FixtureInfo: Decodable {
     let id: Int
+    let referee: String?
+    let date: String?
 }
 
 private struct FixtureTeams: Decodable {
@@ -252,4 +368,59 @@ private struct MatchWinnerOdds {
     let quoteHeim: String
     let quoteUnentschieden: String
     let quoteGast: String
+}
+
+private struct TeamsListResponse: Decodable {
+    let response: [TeamListEntry]
+}
+
+private struct TeamListEntry: Decodable {
+    let team: TeamListInfo
+}
+
+private struct TeamListInfo: Decodable {
+    let id: Int
+    let name: String
+}
+
+private struct TeamStatsResponse: Decodable {
+    let response: TeamStatsData
+}
+
+private struct TeamStatsData: Decodable {
+    let team: TeamListInfo
+    let fixtures: TeamStatsFixtures
+    let goals: TeamStatsGoals
+    let shots: TeamStatsShots?
+}
+
+private struct TeamStatsFixtures: Decodable {
+    let played: TeamHomeAway
+}
+
+private struct TeamHomeAway: Decodable {
+    let home: Int
+    let away: Int
+    let total: Int
+}
+
+private struct TeamStatsGoals: Decodable {
+    let `for`: TeamStatsGoalSide
+}
+
+private struct TeamStatsGoalSide: Decodable {
+    let total: TeamHomeAway
+}
+
+private struct TeamStatsShots: Decodable {
+    let on: TeamStatsOn?
+}
+
+private struct TeamStatsOn: Decodable {
+    let total: TeamStatsOnTotal?
+}
+
+private struct TeamStatsOnTotal: Decodable {
+    let home: Int?
+    let away: Int?
 }

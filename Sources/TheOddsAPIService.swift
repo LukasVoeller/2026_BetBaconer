@@ -29,7 +29,7 @@ struct TheOddsAPIService {
         self.session = session
     }
 
-    func fetchBundesligaOdds() async throws -> [BettingOdds] {
+    func fetchAllMarketOdds() async throws -> (h2h: [BettingOdds], overUnder: [OverUnderOdds], btts: [BTTSOdds], handicap: [HandicapOdds]) {
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw TheOddsAPIError.missingKey
         }
@@ -38,7 +38,7 @@ struct TheOddsAPIService {
         components.queryItems = [
             .init(name: "apiKey", value: apiKey),
             .init(name: "regions", value: "eu,uk"),
-            .init(name: "markets", value: "h2h"),
+            .init(name: "markets", value: "h2h,totals,btts,asian_handicap"),
             .init(name: "oddsFormat", value: "decimal"),
         ]
 
@@ -57,7 +57,8 @@ struct TheOddsAPIService {
         }
 
         let events = try JSONDecoder().decode([OddsEvent].self, from: data)
-        return events.compactMap { event in
+
+        let h2h: [BettingOdds] = events.compactMap { event in
             guard let marketOdds = aggregatedMarketOdds(for: event) else { return nil }
             return BettingOdds(
                 heim: event.homeTeam,
@@ -67,6 +68,12 @@ struct TheOddsAPIService {
                 quoteGast: marketOdds.quoteGast
             )
         }
+
+        let overUnder: [OverUnderOdds] = events.compactMap { aggregatedOverUnder(for: $0) }
+        let btts: [BTTSOdds] = events.compactMap { aggregatedBTTS(for: $0) }
+        let handicap: [HandicapOdds] = events.compactMap { aggregatedHandicap(for: $0) }
+
+        return (h2h: h2h, overUnder: overUnder, btts: btts, handicap: handicap)
     }
 
     private func aggregatedMarketOdds(for event: OddsEvent) -> MarketOdds? {
@@ -97,6 +104,91 @@ struct TheOddsAPIService {
             quoteHeim: format(decimal: home),
             quoteUnentschieden: format(decimal: draw),
             quoteGast: format(decimal: away)
+        )
+    }
+
+    private func aggregatedOverUnder(for event: OddsEvent) -> OverUnderOdds? {
+        var overPrices: [Double] = []
+        var underPrices: [Double] = []
+        var linePrices: [Double] = []
+
+        for bookmaker in event.bookmakers {
+            guard let market = bookmaker.markets.first(where: { $0.key == "totals" }) else { continue }
+            for outcome in market.outcomes {
+                let point = outcome.point ?? 2.5
+                linePrices.append(point)
+                if outcome.name.lowercased() == "over" {
+                    overPrices.append(outcome.price)
+                } else if outcome.name.lowercased() == "under" {
+                    underPrices.append(outcome.price)
+                }
+            }
+        }
+
+        guard let over = median(overPrices), let under = median(underPrices) else { return nil }
+        let line = median(linePrices) ?? 2.5
+        return OverUnderOdds(
+            heim: event.homeTeam,
+            gast: event.awayTeam,
+            line: line,
+            overQuote: format(decimal: over),
+            underQuote: format(decimal: under)
+        )
+    }
+
+    private func aggregatedBTTS(for event: OddsEvent) -> BTTSOdds? {
+        var yesPrices: [Double] = []
+        var noPrices: [Double] = []
+
+        for bookmaker in event.bookmakers {
+            guard let market = bookmaker.markets.first(where: { $0.key == "btts" }) else { continue }
+            for outcome in market.outcomes {
+                if outcome.name.lowercased() == "yes" {
+                    yesPrices.append(outcome.price)
+                } else if outcome.name.lowercased() == "no" {
+                    noPrices.append(outcome.price)
+                }
+            }
+        }
+
+        guard let yes = median(yesPrices), let no = median(noPrices) else { return nil }
+        return BTTSOdds(
+            heim: event.homeTeam,
+            gast: event.awayTeam,
+            yesQuote: format(decimal: yes),
+            noQuote: format(decimal: no)
+        )
+    }
+
+    private func aggregatedHandicap(for event: OddsEvent) -> HandicapOdds? {
+        var homePrices: [Double] = []
+        var awayPrices: [Double] = []
+        var homePoints: [Double] = []
+        var awayPoints: [Double] = []
+
+        for bookmaker in event.bookmakers {
+            guard let market = bookmaker.markets.first(where: { $0.key == "asian_handicap" }) else { continue }
+            for outcome in market.outcomes {
+                if teamNamesLikelyMatch(outcome.name, event.homeTeam) {
+                    homePrices.append(outcome.price)
+                    if let point = outcome.point { homePoints.append(point) }
+                } else if teamNamesLikelyMatch(outcome.name, event.awayTeam) {
+                    awayPrices.append(outcome.price)
+                    if let point = outcome.point { awayPoints.append(point) }
+                }
+            }
+        }
+
+        guard let homeQuote = median(homePrices), let awayQuote = median(awayPrices) else { return nil }
+        let homeHandicap = median(homePoints) ?? 0
+        let awayHandicap = median(awayPoints) ?? 0
+        return HandicapOdds(
+            heim: event.homeTeam,
+            gast: event.awayTeam,
+            homeHandicap: homeHandicap,
+            homeQuote: format(decimal: homeQuote),
+            awayHandicap: awayHandicap,
+            awayQuote: format(decimal: awayQuote)
         )
     }
 
@@ -140,6 +232,7 @@ private struct OddsMarket: Decodable {
 private struct OddsOutcome: Decodable {
     let name: String
     let price: Double
+    let point: Double?
 }
 
 private struct MarketOdds {

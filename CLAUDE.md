@@ -60,6 +60,10 @@ NavigationSplitView
 }
 ```
 
+## README
+
+Die `README.md` ist immer aktuell zu halten. Nach jeder Änderung an Funktionen, Architektur, Datenquellen oder Konfigurationsmöglichkeiten muss die README entsprechend angepasst werden.
+
 ## Build
 
 ```bash

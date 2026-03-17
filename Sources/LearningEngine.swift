@@ -28,6 +28,8 @@ public struct LearningEngine {
             empty.actualHomeWinRate = 0
             empty.actualDrawRate = 0
             empty.actualAwayWinRate = 0
+            empty.brierScore = 0
+            empty.marketBrierScore = 0
             return empty
         }
 
@@ -75,6 +77,45 @@ public struct LearningEngine {
         }.count
         let highScoreOverpredictionBias = (Double(predictedHighScores) / sampleSize) - (Double(actualHighScores) / sampleSize)
 
+        // Brier Scores (nur fuer Matches mit Markt-Quoten)
+        let brierMatches = evaluated.filter { $0.quoteHome != nil && $0.quoteDraw != nil && $0.quoteAway != nil }
+        let brierScore: Double
+        if brierMatches.isEmpty {
+            brierScore = 0
+        } else {
+            let sum = brierMatches.map { m -> Double in
+                guard let actualOutcome = m.actualOutcome else { return 0 }
+                let oH = actualOutcome == .homeWin ? 1.0 : 0.0
+                let oD = actualOutcome == .draw    ? 1.0 : 0.0
+                let oA = actualOutcome == .awayWin ? 1.0 : 0.0
+                let pH = m.predictedOutcome == .homeWin ? 1.0 : 0.0
+                let pD = m.predictedOutcome == .draw    ? 1.0 : 0.0
+                let pA = m.predictedOutcome == .awayWin ? 1.0 : 0.0
+                return pow(pH - oH, 2) + pow(pD - oD, 2) + pow(pA - oA, 2)
+            }.reduce(0, +)
+            brierScore = sum / Double(brierMatches.count)
+        }
+
+        let marketBrierScore: Double
+        if brierMatches.isEmpty {
+            marketBrierScore = 0
+        } else {
+            let validMatches = brierMatches.compactMap { m -> Double? in
+                guard let qH = m.quoteHome, let qD = m.quoteDraw, let qA = m.quoteAway,
+                      qH > 0, qD > 0, qA > 0,
+                      let actualOutcome = m.actualOutcome else { return nil }
+                let inv = 1/qH + 1/qD + 1/qA
+                let pH = (1/qH) / inv
+                let pD = (1/qD) / inv
+                let pA = (1/qA) / inv
+                let oH = actualOutcome == .homeWin ? 1.0 : 0.0
+                let oD = actualOutcome == .draw    ? 1.0 : 0.0
+                let oA = actualOutcome == .awayWin ? 1.0 : 0.0
+                return pow(pH - oH, 2) + pow(pD - oD, 2) + pow(pA - oA, 2)
+            }
+            marketBrierScore = validMatches.isEmpty ? 0 : validMatches.reduce(0, +) / Double(validMatches.count)
+        }
+
         let weights = LearningCorrectionWeights(
             drawBoost: max(0, -drawBias),
             homeGoalReductionBias: max(0, avgHomeGoalOverprediction),
@@ -114,7 +155,9 @@ public struct LearningEngine {
             predictedAwayWinRate: predictedAwayWinRate,
             actualHomeWinRate: actualHomeWinRate,
             actualDrawRate: actualDrawRate,
-            actualAwayWinRate: actualAwayWinRate
+            actualAwayWinRate: actualAwayWinRate,
+            brierScore: brierScore,
+            marketBrierScore: marketBrierScore
         )
     }
 

@@ -137,6 +137,10 @@ struct ContentView: View {
                     SecureField("The Odds API Key", text: $state.theOddsAPIKey)
                         .textFieldStyle(.roundedBorder)
                 }
+                inputGroup(title: "API-Football Key") {
+                    SecureField("API-Football Key", text: $state.apiFootballAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                }
                 inputGroup(title: "Codex-Laeufe") {
                     Stepper(value: $state.codexRunCount, in: 1...9) {
                         Text("\(state.codexRunCount) Lauf/Laeufe pro Analyse")
@@ -455,17 +459,11 @@ struct ContentView: View {
             if state.tipHistory.isEmpty {
                 emptyState("Noch keine Generierungen aufgezeichnet.")
             } else {
-                HStack {
-                    Text("\(state.tipHistory.count) Generierung(en) gespeichert")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Verlauf löschen") { state.clearTipHistory() }
-                        .buttonStyle(.bordered)
-                        .tint(brandEmber)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                Text("\(state.tipHistory.count) Generierung(en) gespeichert")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
                 Divider()
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
@@ -724,10 +722,46 @@ struct ContentView: View {
     }
 
     private func tipRow(_ tip: SuggestedTip) -> some View {
-        let absences = state.playerAbsences.filter { absence in
-            teamNamesLikelyMatch(absence.teamName, tip.heim) || teamNamesLikelyMatch(absence.teamName, tip.gast)
-        }
+        // Lookups
+        let odds    = state.bettingOdds.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
+        let ou      = state.overUnderOdds.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
+        let btts    = state.bttsOdds.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
+        let hcp     = state.handicapOdds.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
+        let weather = state.matchWeather.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
+        let referee = state.matchReferees.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
+        let h2h     = state.finishedResults
+            .filter { ($0.heim == tip.heim && $0.gast == tip.gast) || ($0.heim == tip.gast && $0.gast == tip.heim) }
+            .sorted { ($0.spieltag, $0.datum) > ($1.spieltag, $1.datum) }
+            .prefix(5)
+        let heimExtras = state.teamExtraFixtures.filter { teamNamesLikelyMatch($0.teamName, tip.heim) }
+        let gastExtras = state.teamExtraFixtures.filter { teamNamesLikelyMatch($0.teamName, tip.gast) }
+        let heimShots  = state.teamShotsStats.first { teamNamesLikelyMatch($0.teamName, tip.heim) }
+        let gastShots  = state.teamShotsStats.first { teamNamesLikelyMatch($0.teamName, tip.gast) }
+        let absences   = state.playerAbsences.filter { teamNamesLikelyMatch($0.teamName, tip.heim) || teamNamesLikelyMatch($0.teamName, tip.gast) }
+        let heimAbsences = absences.filter { teamNamesLikelyMatch($0.teamName, tip.heim) }
+        let gastAbsences = absences.filter { teamNamesLikelyMatch($0.teamName, tip.gast) }
+
+        // Vorausberechnungen die @ViewBuilder-Probleme vermeiden
+        let tormarktEntry: (label: String, value: String)? = {
+            if let ou {
+                var s = "O/U \(String(format: "%.1f", ou.line)): Over \(ou.overQuote) / Under \(ou.underQuote)"
+                if let btts { s += "  |  BTTS Ja \(btts.yesQuote) / Nein \(btts.noQuote)" }
+                return ("Tormarkt", s)
+            } else if let btts {
+                return ("BTTS", "Ja \(btts.yesQuote) / Nein \(btts.noQuote)")
+            }
+            return nil
+        }()
+        let belastungText: String? = {
+            let all = heimExtras + gastExtras
+            guard !all.isEmpty else { return nil }
+            return all.map { e in "\(e.teamName): \(e.competition) vs. \(e.opponent) (\(e.isHome ? "Heim" : "Ausw."))" }.joined(separator: "  |  ")
+        }()
+        let h2hText: String? = h2h.isEmpty ? nil :
+            h2h.map { "\($0.heim) \($0.toreHeim):\($0.toreGast) \($0.gast)" }.joined(separator: "  |  ")
+
         return VStack(alignment: .leading, spacing: 4) {
+            // Header
             Text("\(tip.heim) vs. \(tip.gast)")
                 .font(.system(size: 15, weight: .semibold))
             Text("\(tip.toreHeim) : \(tip.toreGast)")
@@ -739,22 +773,75 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            let heimAbsences = absences.filter { teamNamesLikelyMatch($0.teamName, tip.heim) }
-            let gastAbsences = absences.filter { teamNamesLikelyMatch($0.teamName, tip.gast) }
+
+            // Metriken
+            VStack(alignment: .leading, spacing: 3) {
+                if let o = odds {
+                    tipMetricRow("Quoten", "1: \(o.quoteHeim)  X: \(o.quoteUnentschieden)  2: \(o.quoteGast)")
+                }
+                if let tormarktEntry {
+                    tipMetricRow(tormarktEntry.label, tormarktEntry.value)
+                }
+                if let hcp {
+                    let hSign = hcp.homeHandicap >= 0 ? "+" : ""
+                    let aSign = hcp.awayHandicap >= 0 ? "+" : ""
+                    tipMetricRow("Handicap", "\(tip.heim) (\(hSign)\(hcp.homeHandicap)) \(hcp.homeQuote)  /  \(tip.gast) (\(aSign)\(hcp.awayHandicap)) \(hcp.awayQuote)")
+                }
+                if let weather {
+                    tipMetricRow("Wetter", tipWeatherText(weather))
+                }
+                if let referee {
+                    tipMetricRow("Schiedsrichter", referee.referee)
+                }
+                if let h2hText {
+                    tipMetricRow("H2H", h2hText)
+                }
+                if let belastungText {
+                    tipMetricRow("Belastung", belastungText)
+                }
+                if let hs = heimShots {
+                    tipMetricRow("Shots \(tip.heim)", String(format: "%.1f SOG/Sp. (Heim) | Verwertung %.0f%%", hs.shotsOnGoalPerGameHome, hs.shotsOnGoalConversionHome * 100))
+                }
+                if let gs = gastShots {
+                    tipMetricRow("Shots \(tip.gast)", String(format: "%.1f SOG/Sp. (Ausw.) | Verwertung %.0f%%", gs.shotsOnGoalPerGameAway, gs.shotsOnGoalConversionAway * 100))
+                }
+            }
+            .padding(.top, 4)
+
+            // Ausfälle
             if !heimAbsences.isEmpty || !gastAbsences.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    if !heimAbsences.isEmpty {
-                        absenceGroup(team: tip.heim, absences: heimAbsences)
-                    }
-                    if !gastAbsences.isEmpty {
-                        absenceGroup(team: tip.gast, absences: gastAbsences)
-                    }
+                    if !heimAbsences.isEmpty { absenceGroup(team: tip.heim, absences: heimAbsences) }
+                    if !gastAbsences.isEmpty { absenceGroup(team: tip.gast, absences: gastAbsences) }
                 }
                 .padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
+    }
+
+    private func tipMetricRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .trailing)
+            Text(value)
+                .font(.system(size: 12))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func tipWeatherText(_ w: MatchWeather) -> String {
+        var parts: [String] = []
+        if let t = w.temperatureCelsius { parts.append(String(format: "%.0f°C", t)) }
+        if let mm = w.precipitationMillimeters, mm > 0.5 { parts.append(String(format: "%.1f mm", mm)) }
+        if let prob = w.precipitationProbability, prob > 10 { parts.append("Regen \(prob)%") }
+        if let wind = w.windSpeedKmh, wind > 20 { parts.append(String(format: "Wind %.0f km/h", wind)) }
+        let detail = parts.isEmpty ? "keine Besonderheiten" : parts.joined(separator: ", ")
+        return "\(w.locationName) – \(detail)"
     }
 
     private func absenceGroup(team: String, absences: [PlayerAbsence]) -> some View {
