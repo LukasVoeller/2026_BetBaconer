@@ -255,6 +255,7 @@ METHODIK (intern, nicht im Output):
 
 3. WETTQUOTEN (Gewicht 30–40%)
    Die implizierten Wahrscheinlichkeiten aus den Quoten aggregieren Marktwissen inklusive Verletzungen und Formeinschaetzungen. Nutze sie als starkes Signal. Weiche nur ab, wenn deine Analyse klar dagegen spricht.
+   Pruefe die H2H-Quoten per aktueller Web-Recherche gegen mindestens eine serioese Quelle. Wenn die gelieferten Quoten unplausibel oder widerspruechlich wirken, verwende die recherchierten aktuellen Quoten.
 
 4. HEAD-TO-HEAD (max. 5–10%)
    Direkte Duelle nur schwach gewichten. Nutze sie nur als kleines Zusatzsignal, niemals als Hauptgrund.
@@ -341,6 +342,52 @@ OUTPUT-ANFORDERUNGEN:
         })
         guard let data = try? encoder.encode(payload), let json = String(data: data, encoding: .utf8) else { return "" }
         return json
+    }
+
+    func buildSeasonQuestionPrompt(season: Int, teams: [String]) -> String {
+        let teamLines = teams.map { "- \($0)" }.joined(separator: "\n")
+        return """
+Du bist ein Fussball-Prognose-Modell. Beantworte nur die Kicktipp-Saisonfragen fuer die Bundesliga-Saison \(season).
+
+Verwende ausschliesslich Teamnamen aus dieser Liste:
+\(teamLines)
+
+Fragen:
+- Welche Mannschaften belegen die Plätze 16-18?
+- Welche Mannschaft stellt den Spieler mit den meisten Toren?
+- Wer wird Deutscher Meister?
+- Wer wird Herbstmeister?
+- Wo findet der erste Trainerwechsel statt?
+
+OUTPUT:
+- Exakt ein JSON-Objekt mit dem Feld "season_questions", kein anderer Text.
+- "answers" enthaelt Teamnamen exakt aus der Liste.
+- Bei Plaetze 16-18 genau drei Teamnamen, sonst genau ein Teamname.
+
+{
+  "season_questions": [
+    {
+      "question": "Welche Mannschaften belegen die Plätze 16-18?",
+      "answers": ["Team A", "Team B", "Team C"]
+    }
+  ]
+}
+"""
+    }
+
+    func parseSeasonQuestionTips(from content: String) throws -> [SeasonQuestionTip] {
+        let decoder = JSONDecoder()
+        let data = Data(content.utf8)
+        if let wrapped = try? decoder.decode(SeasonQuestionsEnvelope.self, from: data) {
+            return wrapped.seasonQuestions
+        }
+        if let start = content.firstIndex(of: "{"),
+           let end = content.lastIndex(of: "}"),
+           start <= end,
+           let wrapped = try? decoder.decode(SeasonQuestionsEnvelope.self, from: Data(String(content[start...end]).utf8)) {
+            return wrapped.seasonQuestions
+        }
+        throw TipWorkflowError.invalidModelOutput
     }
 
     func parseTips(from content: String, upcomingMatches: [UpcomingMatch]) throws -> [SuggestedTip] {
@@ -722,6 +769,14 @@ private struct TeamStandingAccumulator {
 
 private struct TipsEnvelope: Decodable {
     let tips: [TipPayload]
+}
+
+private struct SeasonQuestionsEnvelope: Decodable {
+    let seasonQuestions: [SeasonQuestionTip]
+
+    private enum CodingKeys: String, CodingKey {
+        case seasonQuestions = "season_questions"
+    }
 }
 
 private struct TipPayload: Decodable {

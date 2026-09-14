@@ -19,6 +19,15 @@ public func normalizeTeamName(_ name: String) -> String {
         "unionberlin": "unionberlin",
         "fcbayernmunchen": "bayernmunchen",
         "bayernmunchen": "bayernmunchen",
+        "sv07elversberg": "svelversberg",
+        "svelversberg": "svelversberg",
+        "bayer04leverkusen": "bayerleverkusen",
+        "bayer04": "bayerleverkusen",
+        "bayerleverkusen": "bayerleverkusen",
+        "fcschalke04": "schalke04",
+        "schalke04": "schalke04",
+        "scpaderborn07": "paderborn07",
+        "paderborn07": "paderborn07",
     ]
 
     return aliases[compact] ?? compact

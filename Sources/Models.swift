@@ -49,6 +49,13 @@ public struct SuggestedTip: Codable, Identifiable, Hashable {
     public var id: String { "\(spieltag)-\(heim)-\(gast)" }
 }
 
+struct SeasonQuestionTip: Codable, Identifiable, Hashable {
+    let question: String
+    let answers: [String]
+
+    var id: String { question }
+}
+
 public struct BettingOdds: Codable, Identifiable, Hashable {
     public let heim: String
     public let gast: String
@@ -182,4 +189,3 @@ struct TipGenerationRecord: Codable, Identifiable {
         case id, timestamp, spieltag, tips, odds
     }
 }
-

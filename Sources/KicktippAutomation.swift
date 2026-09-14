@@ -98,10 +98,11 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
           const normalizeQuote = (value) => {
             if (!value) return null;
             const cleaned = String(value).trim().replace(',', '.');
-            return /^\d+(\.\d+)?$/.test(cleaned) ? cleaned : null;
+            if (!/^\d+\.\d+$/.test(cleaned)) return null;
+            return Number(cleaned) >= 1.01 ? cleaned : null;
           };
 
-          const rows = Array.from(document.querySelectorAll('tr')).filter(row => {
+          const rows = Array.from(document.querySelectorAll('#tippabgabeSpiele tbody tr.datarow, tr')).filter(row => {
             const text = (row.innerText || '').trim();
             return text.length > 0 && /(\d+[\.,]\d+)/.test(text);
           });
@@ -117,15 +118,17 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
               row.querySelector('.gast')
             ].filter(Boolean);
 
-            let heim = teamNodes[0]?.textContent?.trim() || '';
-            let gast = teamNodes[1]?.textContent?.trim() || '';
+            const cells = Array.from(row.querySelectorAll(':scope > td, :scope > th'));
+            let heim = cells.find(cell => cell.classList.contains('col1'))?.textContent?.trim() || teamNodes[0]?.textContent?.trim() || '';
+            let gast = cells.find(cell => cell.classList.contains('col2'))?.textContent?.trim() || teamNodes[1]?.textContent?.trim() || '';
 
             if (!heim || !gast) {
-              const textCells = Array.from(row.querySelectorAll('td, th, div, span')).filter(node => {
+              const textCells = cells.filter(node => {
                 const text = (node.textContent || '').trim();
                 if (!text || text.length < 2) return false;
                 if (/^\d+([\.,]\d+)?$/.test(text)) return false;
                 if (/^[\d.:,\s]+$/.test(text)) return false;
+                if (node.querySelector('input, select, .quote-text')) return false;
                 return true;
               }).map(node => (node.textContent || '').trim());
 
@@ -151,7 +154,7 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
               || normalizeQuote(row.querySelector(selectorCandidates[5])?.textContent);
 
             if (!heimQuote || !drawQuote || !gastQuote) {
-              const quoteNodes = Array.from(row.querySelectorAll('[class*="quote"], [class*="odds"], [data-odd], [data-quote], a, span, div'))
+              const quoteNodes = Array.from(row.querySelectorAll('[class*="quote"], [class*="odds"], [data-odd], [data-quote]'))
                 .map(node => normalizeQuote(node.textContent))
                 .filter(Boolean);
               const uniqueQuotes = [...new Set(quoteNodes)];
@@ -164,7 +167,7 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
 
             if ((!heimQuote || !drawQuote || !gastQuote) && row.innerText) {
               const quoteMatches = Array.from(row.innerText.matchAll(/\b\d+[\.,]\d+\b/g)).map(match => normalizeQuote(match[0])).filter(Boolean);
-              const uniqueQuotes = [...new Set(quoteMatches)];
+              const uniqueQuotes = [...new Set(quoteMatches)].slice(-3);
               if (uniqueQuotes.length >= 3) {
                 heimQuote = heimQuote || uniqueQuotes[0];
                 drawQuote = drawQuote || uniqueQuotes[1];
@@ -349,6 +352,52 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
           return 'ok';
         })();
         """
+
+        try await evaluateJavaScriptVoid(script)
+    }
+
+    func applySeasonQuestionTips(_ tips: [SeasonQuestionTip]) async throws {
+        guard !tips.isEmpty else { return }
+
+        let payload = tips.map { ["question": $0.question, "answers": $0.answers] as [String: Any] }
+        let jsonData = try JSONSerialization.data(withJSONObject: payload)
+        guard let jsonString = String(data: jsonData, encoding: .utf8) else {
+            throw KicktippAutomationError.javaScriptError("Saisonfragen-Payload konnte nicht serialisiert werden.")
+        }
+
+        let script = #"""
+        (() => {
+          const tips = __TIPS__;
+          const normalize = value => String(value || '')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase().replace(/[^a-z0-9]/g, '');
+          const same = (a, b) => {
+            const left = normalize(a);
+            const right = normalize(b);
+            return left === right || left.includes(right) || right.includes(left);
+          };
+          const rows = Array.from(document.querySelectorAll('#tippabgabeFragen tbody tr.datarow'));
+
+          for (const tip of tips) {
+            const questionKey = normalize(tip.question);
+            const row = rows.find(row => {
+              const text = normalize(row.querySelector('.col1')?.textContent || row.textContent);
+              return text.includes(questionKey) || questionKey.includes(text);
+            });
+            if (!row) continue;
+
+            const selects = Array.from(row.querySelectorAll('select'));
+            (tip.answers || []).slice(0, selects.length).forEach((answer, index) => {
+              const select = selects[index];
+              const option = Array.from(select.options).find(option => same(option.textContent, answer));
+              if (!option) return;
+              select.value = option.value;
+              select.dispatchEvent(new Event('input', { bubbles: true }));
+              select.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+          }
+        })();
+        """#.replacingOccurrences(of: "__TIPS__", with: jsonString)
 
         try await evaluateJavaScriptVoid(script)
     }

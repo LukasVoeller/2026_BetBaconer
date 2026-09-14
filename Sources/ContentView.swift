@@ -7,6 +7,7 @@ struct ContentView: View {
     private let brandGlow = Color(red: 0.86, green: 0.92, blue: 0.21)
     private let brandOrange = Color(red: 0.93, green: 0.43, blue: 0.09)
     private let brandEmber = Color(red: 0.74, green: 0.28, blue: 0.07)
+    private let actionGridColumns = [GridItem(.adaptive(minimum: 132), spacing: 8)]
 
     var body: some View {
         NavigationSplitView {
@@ -172,21 +173,25 @@ struct ContentView: View {
 
     private var codexCard: some View {
         card(title: "Codex", icon: "terminal") {
-            VStack(alignment: .leading, spacing: 8) {
-                Button("Status prüfen") {
+            LazyVGrid(columns: actionGridColumns, alignment: .leading, spacing: 8) {
+                Button {
                     Task {
                         await state.checkCodexLoginStatus()
                         selectedTab = .codex
                     }
+                } label: {
+                    fullWidthButtonLabel("Status prüfen")
                 }
                 .buttonStyle(.bordered)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Button("Mit Codex anmelden") {
+                Button {
                     Task {
                         await state.startCodexLogin()
                         selectedTab = .codex
                     }
+                } label: {
+                    fullWidthButtonLabel("Mit Codex anmelden")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(brandOrange)
@@ -198,48 +203,58 @@ struct ContentView: View {
     private var kicktippCard: some View {
         card(title: "Kicktipp", icon: "soccer.field") {
             VStack(alignment: .leading, spacing: 8) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Button("Login öffnen") {
+                LazyVGrid(columns: actionGridColumns, alignment: .leading, spacing: 8) {
+                    Button {
                         state.openKicktippLogin()
                         selectedTab = .browser
+                    } label: {
+                        fullWidthButtonLabel("Login öffnen")
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Button("Tippabgabe laden") {
+                    Button {
                         Task {
                             await state.loadKicktippMatchday()
                             selectedTab = .browser
                         }
+                    } label: {
+                        fullWidthButtonLabel("Tippabgabe laden")
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
                 }
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Button("Tipps eintragen") {
+                LazyVGrid(columns: actionGridColumns, alignment: .leading, spacing: 8) {
+                    Button {
                         Task {
                             await state.applyTipsToKicktipp()
                             selectedTab = .browser
                         }
+                    } label: {
+                        fullWidthButtonLabel("Tipps eintragen")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(brandOrange)
                     .disabled(state.suggestedTips.isEmpty || state.kicktippAutomation.isPageLoading || state.isBusy)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Button("Tipps absenden") {
+                    Button {
                         Task {
                             await state.submitKicktippTips()
                             selectedTab = .browser
                         }
+                    } label: {
+                        fullWidthButtonLabel("Tipps absenden")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(brandOrange)
                     .disabled(state.kicktippMatchFields.isEmpty || state.kicktippAutomation.isPageLoading || state.isBusy)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
                 }
 
                 if state.kicktippAutomation.isPageLoading {
@@ -255,19 +270,32 @@ struct ContentView: View {
     private var workflowCard: some View {
         card(title: "Bundesliga", icon: "wand.and.stars") {
             VStack(alignment: .leading, spacing: 10) {
-                inputGroup(title: "Saison") {
-                    TextField("2025", text: $state.season)
-                        .textFieldStyle(.roundedBorder)
-                }
-                Button("Tipps generieren") {
-                    Task {
-                        await state.runWorkflow()
+                LazyVGrid(columns: actionGridColumns, alignment: .leading, spacing: 8) {
+                    Button {
+                        Task {
+                            await state.runWorkflow()
+                        }
+                    } label: {
+                        fullWidthButtonLabel("Tipps generieren")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(brandOrange)
+                    .disabled(state.isBusy)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button {
+                        Task {
+                            await state.applySeasonQuestionTipsToKicktipp()
+                            selectedTab = .browser
+                        }
+                    } label: {
+                        fullWidthButtonLabel("Saisonfragen eintragen")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(brandOrange)
+                    .disabled(state.kicktippAutomation.isPageLoading || state.isBusy)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(brandOrange)
-                .disabled(state.isBusy)
-                .frame(maxWidth: .infinity, alignment: .leading)
 
                 if state.isBusy {
                     HStack(spacing: 8) {
@@ -289,23 +317,19 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Button("Offene Tipps auswerten") {
-                    Task {
-                        await state.evaluateLearningData()
-                        selectedTab = .learning
+                LazyVGrid(columns: actionGridColumns, alignment: .leading, spacing: 8) {
+                    Button {
+                        Task {
+                            await state.evaluateLearningData()
+                            selectedTab = .learning
+                        }
+                    } label: {
+                        fullWidthButtonLabel("Offene Tipps auswerten")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(brandOrange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(brandOrange)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Button("Learning-Daten zurücksetzen") {
-                    state.resetLearningData()
-                    selectedTab = .learning
-                }
-                .buttonStyle(.bordered)
-                .tint(brandEmber)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -459,7 +483,7 @@ struct ContentView: View {
             if state.tipHistory.isEmpty {
                 emptyState("Noch keine Generierungen aufgezeichnet.")
             } else {
-                Text("\(state.tipHistory.count) Generierung(en) gespeichert")
+                Text("\(state.latestTipHistory.count) Spieltag(e) gespeichert")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
@@ -467,7 +491,7 @@ struct ContentView: View {
                 Divider()
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
-                        ForEach(state.tipHistory.reversed()) { record in
+                        ForEach(state.latestTipHistory) { record in
                             let orderedTips = state.orderedTips(record.tips)
                             VStack(alignment: .leading, spacing: 0) {
                                 HStack {
@@ -482,8 +506,10 @@ struct ContentView: View {
                                 .padding(.vertical, 10)
                                 .background(.regularMaterial)
                                 Divider()
+                                historyHeaderRow()
                                 ForEach(orderedTips) { tip in
                                     let oddsMap = historyOddsMap(for: record)
+                                    let actualResult = actualResultText(for: tip)
                                     HStack(spacing: 0) {
                                         Text("\(tip.heim) vs. \(tip.gast)")
                                             .font(.body)
@@ -503,6 +529,11 @@ struct ContentView: View {
                                         }
                                         Text("\(tip.toreHeim) : \(tip.toreGast)")
                                             .font(.body.weight(.bold))
+                                            .monospacedDigit()
+                                            .frame(width: 60, alignment: .center)
+                                        Text(actualResult)
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(actualResult == "-" ? .tertiary : .primary)
                                             .monospacedDigit()
                                             .frame(width: 60, alignment: .center)
                                         if !tip.rationale.isEmpty {
@@ -550,7 +581,7 @@ struct ContentView: View {
             card(title: "Verlauf", icon: "clock.arrow.trianglehead.counterclockwise.rotate.90") {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(state.tipHistory.reversed()) { record in
+                        ForEach(state.latestTipHistory) { record in
                             historyRecordRow(record)
                             Divider()
                         }
@@ -644,15 +675,15 @@ struct ContentView: View {
                     }
                 }
             }
-            card(title: "Prediction-Runs", icon: "list.bullet.rectangle") {
-                if state.predictionRuns.isEmpty {
-                    emptyState("Noch keine Prediction-Runs gespeichert.")
+            card(title: "Bewertete Spieltage", icon: "list.bullet.rectangle") {
+                if state.evaluatedMatchdayRuns.isEmpty {
+                    emptyState("Noch keine Spieltage bewertet.")
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(state.predictionRuns.reversed()) { run in
+                            ForEach(state.evaluatedMatchdayRuns) { run in
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("\(run.spieltag). Spieltag - \(run.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                                    Text("\(run.spieltag). Spieltag")
                                         .font(.subheadline.weight(.semibold))
                                     Text("\(run.matches.filter(\.isEvaluated).count)/\(run.matches.count) bewertet")
                                         .font(.caption)
@@ -711,6 +742,15 @@ struct ContentView: View {
             Text(value)
                 .monospacedDigit()
         }
+    }
+
+    private func fullWidthButtonLabel(_ text: String) -> some View {
+        HStack {
+            Spacer(minLength: 0)
+            Text(text)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private func percentage(_ value: Double) -> String {
@@ -868,6 +908,7 @@ struct ContentView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             ForEach(state.orderedTips(record.tips)) { tip in
+                let actualResult = actualResultText(for: tip)
                 HStack {
                     Text("\(tip.heim) vs. \(tip.gast)")
                         .font(.caption)
@@ -887,10 +928,63 @@ struct ContentView: View {
                         .font(.caption.weight(.bold))
                         .monospacedDigit()
                         .frame(width: 28, alignment: .trailing)
+                    Text(actualResult)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(actualResult == "-" ? .tertiary : .primary)
+                        .monospacedDigit()
+                        .frame(width: 28, alignment: .trailing)
                 }
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private func historyHeaderRow() -> some View {
+        HStack(spacing: 0) {
+            Text("")
+                .frame(maxWidth: .infinity)
+                .padding(.leading, 16)
+            Text("")
+                .frame(width: 130)
+            Text("Soll")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 60, alignment: .center)
+            Text("Ist")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 60, alignment: .center)
+            Text("")
+                .frame(maxWidth: .infinity)
+                .padding(.trailing, 16)
+        }
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+
+    private func actualResultText(for tip: SuggestedTip) -> String {
+        if let prediction = state.predictionRuns
+            .reversed()
+            .flatMap(\.matches)
+            .first(where: { prediction in
+                prediction.spieltag == tip.spieltag
+                && normalizedTeamKey(prediction.heim, prediction.gast) == normalizedTeamKey(tip.heim, tip.gast)
+                && prediction.actualHomeGoals != nil
+                && prediction.actualAwayGoals != nil
+            }),
+           let homeGoals = prediction.actualHomeGoals,
+           let awayGoals = prediction.actualAwayGoals {
+            return "\(homeGoals):\(awayGoals)"
+        }
+
+        if let result = state.finishedResults.first(where: {
+            $0.spieltag == tip.spieltag
+            && normalizedTeamKey($0.heim, $0.gast) == normalizedTeamKey(tip.heim, tip.gast)
+        }) {
+            return "\(result.toreHeim):\(result.toreGast)"
+        }
+
+        return "-"
     }
 
     private func historyOddsMap(for record: TipGenerationRecord) -> [String: BettingOdds] {

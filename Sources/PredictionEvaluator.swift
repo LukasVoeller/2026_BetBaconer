@@ -15,8 +15,16 @@ public struct PredictionEvaluator {
         var updatedRuns: [PredictionRun] = []
         var updatedRunCount = 0
         var evaluatedMatchCount = 0
+        let learningRunIDs = latestRunIDsByMatchday(from: runs)
 
         for run in runs {
+            guard learningRunIDs.contains(run.id) else {
+                let matches = run.matches.map { $0.clearingEvaluation() }
+                if matches != run.matches { updatedRunCount += 1 }
+                updatedRuns.append(run.replacingMatches(matches))
+                continue
+            }
+
             guard let finishedMatches = finishedMatchesBySeason[run.seasonIdentifier] else {
                 updatedRuns.append(run)
                 continue
@@ -28,22 +36,12 @@ public struct PredictionEvaluator {
                 evaluatedMatchCount += zip(run.matches, evaluatedMatches).filter { !$0.0.isEvaluated && $0.1.isEvaluated }.count
             }
 
-            updatedRuns.append(
-                PredictionRun(
-                    id: run.id,
-                    createdAt: run.createdAt,
-                    spieltag: run.spieltag,
-                    modelName: run.modelName,
-                    promptVersion: run.promptVersion,
-                    rawPrompt: run.rawPrompt,
-                    rawResponse: run.rawResponse,
-                    seasonIdentifier: run.seasonIdentifier,
-                    matches: evaluatedMatches
-                )
-            )
+            updatedRuns.append(run.replacingMatches(evaluatedMatches))
         }
 
-        let allMatches = updatedRuns.flatMap(\.matches)
+        let allMatches = updatedRuns
+            .filter { learningRunIDs.contains($0.id) }
+            .flatMap(\.matches)
         let learningState = engine.buildLearningState(from: allMatches, previousState: previousState)
         return PredictionEvaluationSummary(
             evaluatedMatches: evaluatedMatchCount,
@@ -118,5 +116,44 @@ public struct PredictionEvaluator {
 
     private func predictionLookupKey(_ prediction: MatchPrediction) -> String {
         "\(prediction.spieltag)|\(normalizedTeamKey(prediction.heim, prediction.gast))"
+    }
+
+    private func latestRunIDsByMatchday(from runs: [PredictionRun]) -> Set<UUID> {
+        let latest = Dictionary(grouping: runs) { "\($0.seasonIdentifier)|\($0.spieltag)" }
+            .compactMap { _, runs in runs.max { $0.createdAt < $1.createdAt }?.id }
+        return Set(latest)
+    }
+}
+
+private extension PredictionRun {
+    func replacingMatches(_ matches: [MatchPrediction]) -> PredictionRun {
+        PredictionRun(
+            id: id,
+            createdAt: createdAt,
+            spieltag: spieltag,
+            modelName: modelName,
+            promptVersion: promptVersion,
+            rawPrompt: rawPrompt,
+            rawResponse: rawResponse,
+            seasonIdentifier: seasonIdentifier,
+            matches: matches
+        )
+    }
+}
+
+private extension MatchPrediction {
+    func clearingEvaluation() -> MatchPrediction {
+        var prediction = self
+        prediction.actualHomeGoals = nil
+        prediction.actualAwayGoals = nil
+        prediction.actualOutcome = nil
+        prediction.exactHit = nil
+        prediction.tendencyHit = nil
+        prediction.goalDiffHit = nil
+        prediction.absErrorHomeGoals = nil
+        prediction.absErrorAwayGoals = nil
+        prediction.totalAbsGoalError = nil
+        prediction.evaluatedAt = nil
+        return prediction
     }
 }

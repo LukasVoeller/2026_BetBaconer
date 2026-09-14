@@ -22,7 +22,7 @@ final class AppState {
 
     // MARK: - State
 
-    var season: String = "2025"
+    var season: String = String(AppState.currentBundesligaSeason())
     var codexRunCount: Int = {
         let stored = UserDefaults.standard.integer(forKey: Keys.codexRunCount)
         return stored == 0 ? 5 : stored
@@ -77,6 +77,7 @@ final class AppState {
     var finishedResults: [FinishedMatch] = []
     var upcomingMatches: [UpcomingMatch] = []
     var suggestedTips: [SuggestedTip] = []
+    var seasonQuestionTips: [SeasonQuestionTip] = []
     var kicktippMatchFields: [KicktippMatchField] = []
     var orderedSuggestedTips: [SuggestedTip] {
         orderedTips(suggestedTips)
@@ -97,8 +98,14 @@ final class AppState {
             persistTipHistory()
         }
     }
+    var latestTipHistory: [TipGenerationRecord] {
+        Self.latestTipHistory(from: tipHistory)
+    }
     var predictionRuns: [PredictionRun] = [] {
         didSet { persistLearningStore() }
+    }
+    var evaluatedMatchdayRuns: [PredictionRun] {
+        Self.evaluatedMatchdayRuns(from: predictionRuns)
     }
     var learningState: LearningState = .empty {
         didSet { persistLearningStore() }
@@ -139,6 +146,68 @@ final class AppState {
 
     // MARK: - Init
 
+    static func currentBundesligaSeason(for date: Date = Date()) -> Int {
+        let year = Calendar.current.component(.year, from: date)
+        let month = Calendar.current.component(.month, from: date)
+        return month >= 7 ? year : year - 1
+    }
+
+    static func upcomingMatchesForLatestTips(_ record: TipGenerationRecord, predictionRuns: [PredictionRun]) -> [UpcomingMatch] {
+        let latestRun = predictionRuns
+            .filter { $0.spieltag == record.spieltag }
+            .max { $0.createdAt < $1.createdAt }
+
+        if let latestRun {
+            return latestRun.matches.map {
+                UpcomingMatch(spieltag: $0.spieltag, datum: $0.kickoffAt, heim: $0.heim, gast: $0.gast)
+            }
+        }
+
+        return record.tips.map {
+            UpcomingMatch(spieltag: $0.spieltag, datum: "", heim: $0.heim, gast: $0.gast)
+        }
+    }
+
+    static func evaluatedMatchdayRuns(from runs: [PredictionRun]) -> [PredictionRun] {
+        Dictionary(grouping: runs.filter { $0.matches.contains(where: \.isEvaluated) }) {
+            "\($0.seasonIdentifier)|\($0.spieltag)"
+        }
+        .compactMap { _, runs in runs.max { $0.createdAt < $1.createdAt } }
+        .sorted { ($0.seasonIdentifier, $0.spieltag) > ($1.seasonIdentifier, $1.spieltag) }
+    }
+
+    static func latestTipHistory(from records: [TipGenerationRecord]) -> [TipGenerationRecord] {
+        Dictionary(grouping: records) { "\(currentBundesligaSeason(for: $0.timestamp))|\($0.spieltag)" }
+            .compactMap { _, records in records.max { $0.timestamp < $1.timestamp } }
+            .sorted {
+                (currentBundesligaSeason(for: $0.timestamp), $0.spieltag) >
+                (currentBundesligaSeason(for: $1.timestamp), $1.spieltag)
+            }
+    }
+
+    static func manualTips(from fields: [KicktippMatchField], upcomingMatches: [UpcomingMatch]) -> [SuggestedTip] {
+        let matchesByKey = Dictionary(uniqueKeysWithValues: upcomingMatches.map {
+            (normalizedTeamKey($0.heim, $0.gast), $0)
+        })
+
+        return fields.compactMap { field in
+            guard let match = matchesByKey[normalizedTeamKey(field.heim, field.gast)],
+                  let homeGoals = Int(field.existingHeim.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let awayGoals = Int(field.existingGast.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                return nil
+            }
+
+            return SuggestedTip(
+                spieltag: match.spieltag,
+                heim: match.heim,
+                gast: match.gast,
+                toreHeim: homeGoals,
+                toreGast: awayGoals,
+                rationale: "Manuell in Kicktipp eingetragener Tipp."
+            )
+        }
+    }
+
     init() {
         do {
             theOddsAPIKey = try secretStore.loadSecret(account: SecretKeys.theOddsAPIKey)
@@ -159,6 +228,13 @@ final class AppState {
 
         do {
             tipHistory = try tipHistoryStore.load()
+            if let latestTips = tipHistory.last {
+                suggestedTips = latestTips.tips
+                bettingOdds = latestTips.odds
+            }
+            if !suggestedTips.isEmpty {
+                importedResponse = tipWorkflowService.encodeTipsAsJSON(suggestedTips)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -167,6 +243,7 @@ final class AppState {
             let loaded = try predictionStore.load()
             predictionRuns = loaded.runs
             learningState = loaded.learningState
+            restoreUpcomingMatchesFromLatestTips()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -347,6 +424,11 @@ final class AppState {
 
     func evaluateLearningData() async {
         await perform {
+            if let fields = try? await self.kicktippAutomation.extractMatchFields() {
+                self.kicktippMatchFields = fields
+            }
+            self.syncManualKicktippTipsForLearning(from: self.kicktippMatchFields)
+
             let seasons = Set(self.predictionRuns.compactMap { Int($0.seasonIdentifier) })
             guard !seasons.isEmpty else {
                 self.infoMessage = "Keine auswertbaren Prediction-Runs vorhanden."
@@ -391,6 +473,7 @@ final class AppState {
             try await self.waitForKicktippPageToFinishLoading()
             let fields = try await self.kicktippAutomation.extractMatchFields()
             self.kicktippMatchFields = fields
+            self.syncManualKicktippTipsForLearning(from: fields)
             self.kicktippStatus = "\(fields.count) Kicktipp-Spiele erkannt"
             self.infoMessage = "Kicktipp-Tippabgabe fuer die Runde wurde geladen."
         }
@@ -400,6 +483,7 @@ final class AppState {
         await perform {
             let fields = try await self.kicktippAutomation.extractMatchFields()
             self.kicktippMatchFields = fields
+            self.syncManualKicktippTipsForLearning(from: fields)
             self.kicktippStatus = "\(fields.count) Kicktipp-Spiele erkannt"
             self.infoMessage = "Kicktipp-Spiele aus der Seite gelesen."
         }
@@ -421,9 +505,41 @@ final class AppState {
 
     func submitKicktippTips() async {
         await perform {
+            let fields = try await self.kicktippAutomation.extractMatchFields()
+            self.kicktippMatchFields = fields
+            self.syncManualKicktippTipsForLearning(from: fields)
             try await self.kicktippAutomation.submitTips()
             self.kicktippStatus = "Tipps abgesendet"
             self.infoMessage = "Die Kicktipp-Tipps wurden abgesendet."
+        }
+    }
+
+    func applySeasonQuestionTipsToKicktipp() async {
+        await perform {
+            let seasonValue = try self.parsedSeason()
+            try await self.ensureKicktippMatchdayReadyForExtraction()
+            let fields = try await self.kicktippAutomation.extractMatchFields()
+            self.kicktippMatchFields = fields
+            let teams = Set(fields.flatMap { [$0.heim, $0.gast] } + self.upcomingMatches.flatMap { [$0.heim, $0.gast] })
+            let prompt = self.tipWorkflowService.buildSeasonQuestionPrompt(season: seasonValue, teams: teams.sorted())
+            let outputFile = FileManager.default.temporaryDirectory
+                .appendingPathComponent("betbaconer-season-questions-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: outputFile) }
+
+            let arguments = ["exec", "--skip-git-repo-check", "--output-last-message", outputFile.path, "-"]
+            let result = try await self.executeCodexCommand(arguments: arguments, standardInput: prompt) { chunk in
+                self.appendConsole(self.stripANSI(chunk))
+            }
+            guard result.exitCode == 0 else {
+                throw CodexCLIError.executionFailed("Codex exec fuer Saisonfragen fehlgeschlagen. Siehe Console-Ausgabe.")
+            }
+
+            let output = try String(contentsOf: outputFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            self.seasonQuestionTips = try self.tipWorkflowService.parseSeasonQuestionTips(from: output)
+            try await self.kicktippAutomation.applySeasonQuestionTips(self.seasonQuestionTips)
+            self.kicktippStatus = "Saisonfragen eingetragen"
+            self.infoMessage = "Die Saisonfragen wurden in Kicktipp eingetragen."
         }
     }
 
@@ -542,6 +658,12 @@ final class AppState {
         }
 
         return updates
+    }
+
+    private func restoreUpcomingMatchesFromLatestTips() {
+        guard upcomingMatches.isEmpty, let latestTips = tipHistory.last else { return }
+        upcomingMatches = Self.upcomingMatchesForLatestTips(latestTips, predictionRuns: predictionRuns)
+        nextSpieltag = upcomingMatches.map(\.spieltag).min()
     }
 
     func orderedTips(_ tips: [SuggestedTip]) -> [SuggestedTip] {
@@ -879,7 +1001,34 @@ final class AppState {
         }
     }
 
-    private func recordPredictionRun(tips: [SuggestedTip], rawPrompt: String, rawResponse: String) {
+    private func syncManualKicktippTipsForLearning(from fields: [KicktippMatchField]) {
+        let tips = Self.manualTips(from: fields, upcomingMatches: upcomingMatches)
+        guard !tips.isEmpty, !hasPredictionRun(modelName: "kicktipp-manual", tips: tips) else { return }
+
+        recordPredictionRun(tips: tips, rawPrompt: "", rawResponse: "", modelName: "kicktipp-manual")
+        appendConsole("[Learning] \(tips.count) manuelle Kicktipp-Tipps fuer Self-Learning gespeichert.\n")
+    }
+
+    private func hasPredictionRun(modelName: String, tips: [SuggestedTip]) -> Bool {
+        let expected = Dictionary(uniqueKeysWithValues: tips.map {
+            (normalizedTeamKey($0.heim, $0.gast), "\($0.toreHeim):\($0.toreGast)")
+        })
+
+        return predictionRuns.contains { run in
+            guard run.modelName == modelName,
+                  run.spieltag == tips.first?.spieltag,
+                  run.matches.count == tips.count else {
+                return false
+            }
+
+            let actual = Dictionary(uniqueKeysWithValues: run.matches.map {
+                (normalizedTeamKey($0.heim, $0.gast), "\($0.predictedHomeGoals):\($0.predictedAwayGoals)")
+            })
+            return actual == expected
+        }
+    }
+
+    private func recordPredictionRun(tips: [SuggestedTip], rawPrompt: String, rawResponse: String, modelName: String = "codex-cli-ensemble") {
         guard !tips.isEmpty else { return }
 
         let runId = UUID()
@@ -931,7 +1080,7 @@ final class AppState {
                 id: runId,
                 createdAt: createdAt,
                 spieltag: tips.first?.spieltag ?? 0,
-                modelName: "codex-cli-ensemble",
+                modelName: modelName,
                 promptVersion: "self-learning-v1",
                 rawPrompt: rawPrompt,
                 rawResponse: rawResponse,
