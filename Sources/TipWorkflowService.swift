@@ -29,6 +29,7 @@ struct TipWorkflowService {
         matchReferees: [MatchReferee] = [],
         teamExtraFixtures: [TeamExtraFixture] = [],
         teamShotsStats: [TeamSeasonShots] = [],
+        llmMatchEnrichments: [LLMMatchEnrichment] = [],
         tipHistory: [TipGenerationRecord] = [],
         learningState: LearningState? = nil
     ) -> String {
@@ -62,6 +63,11 @@ struct TipWorkflowService {
         let normalizedRefereeMap = Dictionary(
             uniqueKeysWithValues: matchReferees.map {
                 ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0.referee)
+            }
+        )
+        let enrichmentByMatch = Dictionary(
+            uniqueKeysWithValues: llmMatchEnrichments.map {
+                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
             }
         )
         let extraFixturesByTeam = Dictionary(grouping: teamExtraFixtures) { normalizeTeamName($0.teamName) }
@@ -165,6 +171,15 @@ struct TipWorkflowService {
             // Schiedsrichter
             if let referee = normalizedRefereeMap[matchKey] {
                 blocks.append("  Schiedsrichter: \(referee)")
+            }
+            if let enrichment = enrichmentByMatch[matchKey] {
+                blocks.append("""
+  LLM-Zusatzdaten: Spielerimpact: \(enrichment.playerImpact)
+  LLM-Zusatzdaten: Schiedsrichter/Spielstil: \(enrichment.refereeStats)
+  LLM-Zusatzdaten: Sharp/Quotencheck: \(enrichment.sharpOdds)
+  LLM-Zusatzdaten: Lineup/Kurzfristiges: \(enrichment.lineup)
+  LLM-Datenqualitaet: \(enrichment.dataQuality) | Confidence \(String(format: "%.0f%%", enrichment.confidence * 100))
+""")
             }
             // Europaeische/Pokal-Belastung
             let homeExtraKey = normalizeTeamName(m.heim)
@@ -277,8 +292,8 @@ METHODIK (intern, nicht im Output):
    Pruefe Plausibilitaet gegen Quoten.
 
 9. SIMULATION
-   Simuliere jedes Spiel gedanklich 500-mal mit Poisson-verteilten Torerwartungen.
-   Gib das wahrscheinlichste Endergebnis zurueck. Wenn mehrere Ergebnisse nah beieinander liegen, bevorzuge das marktnaehere und realistischere Resultat.
+   Schaetze ein realistisches Ergebnis nahe an xG_Heim und xG_Gast.
+   Die App aggregiert alle Laeufe danach deterministisch per Poisson-Modell zur wahrscheinlichsten exakten Scoreline.
 
 10. KONSISTENZ (Gewicht 5–10%)
    Bisherige KI-Vorhersagen fuer denselben Spieltag als leichtes Stabilitaetssignal.
@@ -286,7 +301,7 @@ METHODIK (intern, nicht im Output):
 REALISMUS-REGELN:
 - Typische Bundesliga-Scorelines: 1:0, 2:1, 1:1, 2:0, 0:1, 1:2, 0:0, 3:1, 2:2, 3:0
 - Ergebnisse mit >5 Toren Differenz vermeiden
-- Unentschieden treten in ~25% aller Spiele auf – nicht zu selten waehlen
+- Unentschieden treten in ~25-28% aller Spiele auf; bei 9 Spielen sind meist 2-3 Remis realistisch, 6-7 Remis vermeiden
 - Prognosen zur Liga-Norm hin kalibrieren, extreme Ausreisser vermeiden
 
 \(formTableSection.isEmpty ? "" : """
@@ -344,6 +359,97 @@ OUTPUT-ANFORDERUNGEN:
         return json
     }
 
+    func buildLLMEnrichmentPrompt(
+        season: Int,
+        upcomingMatches: [UpcomingMatch],
+        bettingOdds: [BettingOdds],
+        knownMissingSignals: [String]
+    ) -> String {
+        let matchLines = upcomingMatches.map {
+            "- \($0.spieltag). Spieltag | \($0.heim) vs. \($0.gast) | \($0.datum)"
+        }.joined(separator: "\n")
+        let oddsLines = bettingOdds.map {
+            "- \($0.heim) vs. \($0.gast): 1 \($0.quoteHeim) / X \($0.quoteUnentschieden) / 2 \($0.quoteGast)"
+        }.joined(separator: "\n")
+        let missing = knownMissingSignals.isEmpty ? "- keine bekannten Luecken" : knownMissingSignals.map { "- \($0)" }.joined(separator: "\n")
+
+        return """
+Du recherchierst fehlende oeffentliche Zusatzdaten fuer Bundesliga-Tipps der Saison \(season).
+Nutze aktuelle Web-Recherche. Gib nur verifizierbare Informationen aus serioesen Quellen zurueck.
+Wenn ein Signal nicht belastbar verfuegbar ist, schreibe das klar und setze die numerische Anpassung auf 0.
+
+Spiele:
+\(matchLines)
+
+Bekannte Quoten:
+\(oddsLines.isEmpty ? "- keine" : oddsLines)
+
+Fehlende/zu pruefende Signale:
+\(missing)
+
+Ermittle pro Spiel:
+- Spielerimpact: Ausfaelle nach Rolle, Minuten, Scorer/xG/xA oder Keeper/Abwehr-Relevanz, soweit oeffentlich belegbar.
+- Schiedsrichterstats: Karten, Elfmeter, Fouls, Heim-/Auswaertsneigung, Over/Under-Effekt, falls bekannt.
+- Sharp Odds: Pinnacle/Betfair/Exchange/Closing-nahe Markte, falls oeffentlich erreichbar.
+- Lineup/Kurzfristiges: bestaetigte oder sehr wahrscheinliche Startelf-News; keine Spekulation.
+- Strukturierte Lineups: erwartete/bestaetigte Startelf-Aenderungen und Bankstaerke, falls belastbar.
+- Spielerwert: Minuten, Position, xG/xA, defensive Actions, Keeper-Wert oder Marktwert nur als Hinweis, falls belastbar.
+- Closing-Line/CLV: Closing-nahe Quote oder Bewegung gegen die bekannte Quote, falls vor Spielbeginn oeffentlich sichtbar.
+- Historische Basis: saisonuebergreifende Team-/Liga-Norm mit Zeitverfall, falls belastbar.
+- Scoreline-Kalibrierung: Hinweise, ob typische Scorelines/Remisquote fuer dieses Match ueber- oder untergewichtet wirken.
+- Gewichtungs-Hinweis: ob Markt, Teamrating, Lineup oder Spielerimpact fuer dieses Match staerker gewichtet werden sollte.
+- Datenqualitaet: kurz sagen, was belastbar ist und was fehlt.
+
+Numerische Anpassungen sind Dezimal-Prozentwerte:
+- home_attack_adjustment, away_attack_adjustment, home_defense_adjustment, away_defense_adjustment: -0.25 bis +0.25
+- total_goals_adjustment: -0.40 bis +0.40
+- lineup_impact, player_value_impact, sharp_market_delta, closing_line_value, scoreline_draw_calibration, market_weight_hint: -0.25 bis +0.25
+- historical_goal_baseline: 0 bis 4, nur setzen wenn belastbare historische Torerwartung vorhanden ist, sonst 0
+- confidence: 0 bis 1
+Positive defense_adjustment bedeutet: Gegner-xG steigt, weil diese Defensive geschwaecht ist.
+Positive market_weight_hint bedeutet: Markt staerker gewichten; negativ: Markt schwaecher gewichten.
+lineup_impact, player_value_impact, sharp_market_delta und closing_line_value sind aus Heimsicht: positiv staerkt Heim-xG und schwaecht Gast-xG, negativ umgekehrt.
+
+OUTPUT:
+- Exakt ein JSON-Objekt mit "matches", kein anderer Text.
+- Teamnamen exakt aus den Spieldaten uebernehmen.
+
+{
+  "matches": [
+    {
+      "heim": "Team A",
+      "gast": "Team B",
+      "player_impact": "keine belastbaren Zusatzdaten",
+      "referee_stats": "keine belastbaren Zusatzdaten",
+      "sharp_odds": "keine belastbaren Zusatzdaten",
+      "lineup": "keine bestaetigten Lineups",
+      "data_quality": "niedrig: nur Basisdaten verfuegbar",
+      "structured_lineup": "keine belastbaren Zusatzdaten",
+      "player_value": "keine belastbaren Zusatzdaten",
+      "closing_line": "keine belastbaren Zusatzdaten",
+      "historical_baseline": "keine belastbaren Zusatzdaten",
+      "scoreline_calibration": "keine belastbaren Zusatzdaten",
+      "learned_weight_hint": "keine belastbaren Zusatzdaten",
+      "home_attack_adjustment": 0,
+      "away_attack_adjustment": 0,
+      "home_defense_adjustment": 0,
+      "away_defense_adjustment": 0,
+      "total_goals_adjustment": 0,
+      "lineup_impact": 0,
+      "player_value_impact": 0,
+      "sharp_market_delta": 0,
+      "closing_line_value": 0,
+      "historical_goal_baseline": 0,
+      "scoreline_draw_calibration": 0,
+      "market_weight_hint": 0,
+      "confidence": 0,
+      "sources": []
+    }
+  ]
+}
+"""
+    }
+
     func buildSeasonQuestionPrompt(season: Int, teams: [String]) -> String {
         let teamLines = teams.map { "- \($0)" }.joined(separator: "\n")
         return """
@@ -375,6 +481,40 @@ OUTPUT:
 """
     }
 
+    func buildClosingLinePrompt(predictions: [MatchPrediction]) -> String {
+        let lines = predictions.map { p in
+            "- \(p.spieltag). Spieltag | \(p.heim) vs. \(p.gast) | Tipp \(p.predictedHomeGoals):\(p.predictedAwayGoals) | Quote 1 \(formatQuote(p.quoteHome)) / X \(formatQuote(p.quoteDraw)) / 2 \(formatQuote(p.quoteAway))"
+        }.joined(separator: "\n")
+        return """
+Recherchiere fuer abgeschlossene Bundesliga-Spiele die closing-nahe 1X2-Quote oder letzte oeffentlich belegbare Marktbewegung.
+Wenn keine serioese Quelle auffindbar ist, setze closing_line_value auf 0 und beschreibe die Luecke.
+
+Spiele:
+\(lines)
+
+closing_line_value ist aus Sicht des abgegebenen Tipps:
+- positiv: Tipp schlug die Closing Line / Markt bewegte sich in Tipp-Richtung
+- negativ: Markt bewegte sich gegen den Tipp
+- Bereich -0.25 bis +0.25
+
+OUTPUT:
+- Exakt ein JSON-Objekt mit "closing_lines", kein anderer Text.
+
+{
+  "closing_lines": [
+    {
+      "spieltag": 1,
+      "heim": "Team A",
+      "gast": "Team B",
+      "closing_line": "keine belastbaren Zusatzdaten",
+      "closing_line_value": 0,
+      "sources": []
+    }
+  ]
+}
+"""
+    }
+
     func parseSeasonQuestionTips(from content: String) throws -> [SeasonQuestionTip] {
         let decoder = JSONDecoder()
         let data = Data(content.utf8)
@@ -388,6 +528,57 @@ OUTPUT:
             return wrapped.seasonQuestions
         }
         throw TipWorkflowError.invalidModelOutput
+    }
+
+    func parseLLMMatchEnrichments(from content: String, upcomingMatches: [UpcomingMatch]) throws -> [LLMMatchEnrichment] {
+        let decoder = JSONDecoder()
+        let payload: [LLMMatchEnrichment]
+        if let wrapped = try? decoder.decode(LLMMatchEnrichmentEnvelope.self, from: Data(content.utf8)) {
+            payload = wrapped.matches
+        } else if let start = content.firstIndex(of: "{"),
+                  let end = content.lastIndex(of: "}"),
+                  start <= end,
+                  let wrapped = try? decoder.decode(LLMMatchEnrichmentEnvelope.self, from: Data(String(content[start...end]).utf8)) {
+            payload = wrapped.matches
+        } else {
+            throw TipWorkflowError.invalidModelOutput
+        }
+
+        let expected = Set(upcomingMatches.map { "\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))" })
+        let actual = Set(payload.map { "\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))" })
+        guard expected == actual else { throw TipWorkflowError.fixtureMismatch }
+
+        return payload.map {
+            LLMMatchEnrichment(
+                heim: $0.heim,
+                gast: $0.gast,
+                playerImpact: $0.playerImpact,
+                refereeStats: $0.refereeStats,
+                sharpOdds: $0.sharpOdds,
+                lineup: $0.lineup,
+                dataQuality: $0.dataQuality,
+                structuredLineup: $0.structuredLineup,
+                playerValue: $0.playerValue,
+                closingLine: $0.closingLine,
+                historicalBaseline: $0.historicalBaseline,
+                scorelineCalibration: $0.scorelineCalibration,
+                learnedWeightHint: $0.learnedWeightHint,
+                homeAttackAdjustment: min(max($0.homeAttackAdjustment, -0.25), 0.25),
+                awayAttackAdjustment: min(max($0.awayAttackAdjustment, -0.25), 0.25),
+                homeDefenseAdjustment: min(max($0.homeDefenseAdjustment, -0.25), 0.25),
+                awayDefenseAdjustment: min(max($0.awayDefenseAdjustment, -0.25), 0.25),
+                totalGoalsAdjustment: min(max($0.totalGoalsAdjustment, -0.40), 0.40),
+                lineupImpact: min(max($0.lineupImpact, -0.25), 0.25),
+                playerValueImpact: min(max($0.playerValueImpact, -0.25), 0.25),
+                sharpMarketDelta: min(max($0.sharpMarketDelta, -0.25), 0.25),
+                closingLineValue: min(max($0.closingLineValue, -0.25), 0.25),
+                historicalGoalBaseline: min(max($0.historicalGoalBaseline, 0), 4),
+                scorelineDrawCalibration: min(max($0.scorelineDrawCalibration, -0.25), 0.25),
+                marketWeightHint: min(max($0.marketWeightHint, -0.25), 0.25),
+                confidence: min(max($0.confidence, 0), 1),
+                sources: $0.sources
+            )
+        }
     }
 
     func parseTips(from content: String, upcomingMatches: [UpcomingMatch]) throws -> [SuggestedTip] {
@@ -426,6 +617,20 @@ OUTPUT:
         }
 
         return tips
+    }
+
+    func parseClosingLineUpdates(from content: String) throws -> [LLMClosingLineUpdate] {
+        let decoder = JSONDecoder()
+        if let wrapped = try? decoder.decode(LLMClosingLineEnvelope.self, from: Data(content.utf8)) {
+            return wrapped.closingLines.map(clampedClosingLineUpdate)
+        }
+        if let start = content.firstIndex(of: "{"),
+           let end = content.lastIndex(of: "}"),
+           start <= end,
+           let wrapped = try? decoder.decode(LLMClosingLineEnvelope.self, from: Data(String(content[start...end]).utf8)) {
+            return wrapped.closingLines.map(clampedClosingLineUpdate)
+        }
+        throw TipWorkflowError.invalidModelOutput
     }
 
     // MARK: - Private helpers
@@ -712,6 +917,10 @@ FORMTABELLE LETZTE \(allSpieldags.count) SPIELTAGE:
         return "\(days) Tag(e)"
     }
 
+    private func formatQuote(_ quote: Double?) -> String {
+        quote.map { String(format: "%.2f", $0) } ?? "n/a"
+    }
+
     private func signed(_ value: Int) -> String {
         value > 0 ? "+\(value)" : "\(value)"
     }
@@ -779,6 +988,18 @@ private struct SeasonQuestionsEnvelope: Decodable {
     }
 }
 
+private struct LLMMatchEnrichmentEnvelope: Decodable {
+    let matches: [LLMMatchEnrichment]
+}
+
+private struct LLMClosingLineEnvelope: Decodable {
+    let closingLines: [LLMClosingLineUpdate]
+
+    private enum CodingKeys: String, CodingKey {
+        case closingLines = "closing_lines"
+    }
+}
+
 private struct TipPayload: Decodable {
     let spieltag: Int
     let heim: String
@@ -795,4 +1016,15 @@ private struct TipPayload: Decodable {
         case toreGast = "tore_gast"
         case rationale
     }
+}
+
+private func clampedClosingLineUpdate(_ update: LLMClosingLineUpdate) -> LLMClosingLineUpdate {
+    LLMClosingLineUpdate(
+        spieltag: update.spieltag,
+        heim: update.heim,
+        gast: update.gast,
+        closingLine: update.closingLine,
+        closingLineValue: min(max(update.closingLineValue, -0.25), 0.25),
+        sources: update.sources
+    )
 }

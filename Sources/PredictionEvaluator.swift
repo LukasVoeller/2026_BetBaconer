@@ -42,7 +42,11 @@ public struct PredictionEvaluator {
         let allMatches = updatedRuns
             .filter { learningRunIDs.contains($0.id) }
             .flatMap(\.matches)
-        let learningState = engine.buildLearningState(from: allMatches, previousState: previousState)
+        var learningState = engine.buildLearningState(from: allMatches, previousState: previousState)
+        let versionSummary = modelVersionSummary(from: updatedRuns.filter { learningRunIDs.contains($0.id) })
+        if !versionSummary.isEmpty {
+            learningState.correctionSummaryText += "\n" + versionSummary
+        }
         return PredictionEvaluationSummary(
             evaluatedMatches: evaluatedMatchCount,
             updatedRuns: updatedRunCount,
@@ -97,6 +101,17 @@ public struct PredictionEvaluator {
             keyAbsenceHome: prediction.keyAbsenceHome,
             keyAbsenceAway: prediction.keyAbsenceAway,
             consistencySignalSummary: prediction.consistencySignalSummary,
+            llmLineup: prediction.llmLineup,
+            llmPlayerValue: prediction.llmPlayerValue,
+            llmSharpOdds: prediction.llmSharpOdds,
+            llmClosingLine: prediction.llmClosingLine,
+            llmHistoricalBaseline: prediction.llmHistoricalBaseline,
+            llmScorelineCalibration: prediction.llmScorelineCalibration,
+            dataQuality: prediction.dataQuality,
+            expectedHomeGoals: prediction.expectedHomeGoals,
+            expectedAwayGoals: prediction.expectedAwayGoals,
+            marketWeightHint: prediction.marketWeightHint,
+            evaluatedClosingLineValue: prediction.evaluatedClosingLineValue,
             actualHomeGoals: finishedMatch.toreHeim,
             actualAwayGoals: finishedMatch.toreGast,
             actualOutcome: actualOutcome,
@@ -122,6 +137,23 @@ public struct PredictionEvaluator {
         let latest = Dictionary(grouping: runs) { "\($0.seasonIdentifier)|\($0.spieltag)" }
             .compactMap { _, runs in runs.max { $0.createdAt < $1.createdAt }?.id }
         return Set(latest)
+    }
+
+    private func modelVersionSummary(from runs: [PredictionRun]) -> String {
+        let rows = Dictionary(grouping: runs, by: \.promptVersion)
+            .compactMap { version, runs -> String? in
+                let matches = runs.flatMap(\.matches).filter(\.isEvaluated)
+                guard matches.count >= 5 else { return nil }
+                let tendency = Double(matches.filter { $0.tendencyHit == true }.count) / Double(matches.count)
+                let exact = Double(matches.filter { $0.exactHit == true }.count) / Double(matches.count)
+                let errors = matches.compactMap(\.totalAbsGoalError).map(Double.init)
+                let error = errors.isEmpty ? 0 : errors.reduce(0, +) / Double(errors.count)
+                return String(format: "- Modell %@: %d bewertete Tipps, Tendenz %.0f%%, exakt %.0f%%, Ø Fehler %.2f",
+                              version, matches.count, tendency * 100, exact * 100, error)
+            }
+            .sorted()
+        guard !rows.isEmpty else { return "" }
+        return "Backtesting je Modellversion:\n" + rows.joined(separator: "\n")
     }
 }
 

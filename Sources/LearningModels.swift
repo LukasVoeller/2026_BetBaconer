@@ -52,6 +52,17 @@ public struct MatchPrediction: Codable, Identifiable, Hashable {
     public let keyAbsenceHome: String?
     public let keyAbsenceAway: String?
     public let consistencySignalSummary: String?
+    public var llmLineup: String?
+    public var llmPlayerValue: String?
+    public var llmSharpOdds: String?
+    public var llmClosingLine: String?
+    public var llmHistoricalBaseline: String?
+    public var llmScorelineCalibration: String?
+    public var dataQuality: String?
+    public let expectedHomeGoals: Double?
+    public let expectedAwayGoals: Double?
+    public let marketWeightHint: Double?
+    public var evaluatedClosingLineValue: Double?
 
     public var actualHomeGoals: Int?
     public var actualAwayGoals: Int?
@@ -89,6 +100,17 @@ public struct MatchPrediction: Codable, Identifiable, Hashable {
         keyAbsenceHome: String?,
         keyAbsenceAway: String?,
         consistencySignalSummary: String?,
+        llmLineup: String? = nil,
+        llmPlayerValue: String? = nil,
+        llmSharpOdds: String? = nil,
+        llmClosingLine: String? = nil,
+        llmHistoricalBaseline: String? = nil,
+        llmScorelineCalibration: String? = nil,
+        dataQuality: String? = nil,
+        expectedHomeGoals: Double? = nil,
+        expectedAwayGoals: Double? = nil,
+        marketWeightHint: Double? = nil,
+        evaluatedClosingLineValue: Double? = nil,
         actualHomeGoals: Int?,
         actualAwayGoals: Int?,
         actualOutcome: MatchOutcome?,
@@ -124,6 +146,17 @@ public struct MatchPrediction: Codable, Identifiable, Hashable {
         self.keyAbsenceHome = keyAbsenceHome
         self.keyAbsenceAway = keyAbsenceAway
         self.consistencySignalSummary = consistencySignalSummary
+        self.llmLineup = llmLineup
+        self.llmPlayerValue = llmPlayerValue
+        self.llmSharpOdds = llmSharpOdds
+        self.llmClosingLine = llmClosingLine
+        self.llmHistoricalBaseline = llmHistoricalBaseline
+        self.llmScorelineCalibration = llmScorelineCalibration
+        self.dataQuality = dataQuality
+        self.expectedHomeGoals = expectedHomeGoals
+        self.expectedAwayGoals = expectedAwayGoals
+        self.marketWeightHint = marketWeightHint
+        self.evaluatedClosingLineValue = evaluatedClosingLineValue
         self.actualHomeGoals = actualHomeGoals
         self.actualAwayGoals = actualAwayGoals
         self.actualOutcome = actualOutcome
@@ -309,6 +342,37 @@ public struct LearningCorrectionWeights: Codable {
     var drawBoost: Double
     var homeGoalReductionBias: Double
     var highScoreDampening: Double
+    var marketWeightAdjustment: Double
+    var llmSignalWeight: Double
+
+    init(
+        drawBoost: Double,
+        homeGoalReductionBias: Double,
+        highScoreDampening: Double,
+        marketWeightAdjustment: Double = 0,
+        llmSignalWeight: Double = 0.55
+    ) {
+        self.drawBoost = drawBoost
+        self.homeGoalReductionBias = homeGoalReductionBias
+        self.highScoreDampening = highScoreDampening
+        self.marketWeightAdjustment = marketWeightAdjustment
+        self.llmSignalWeight = llmSignalWeight
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case drawBoost, homeGoalReductionBias, highScoreDampening, marketWeightAdjustment, llmSignalWeight
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            drawBoost: (try? c.decode(Double.self, forKey: .drawBoost)) ?? 0,
+            homeGoalReductionBias: (try? c.decode(Double.self, forKey: .homeGoalReductionBias)) ?? 0,
+            highScoreDampening: (try? c.decode(Double.self, forKey: .highScoreDampening)) ?? 0,
+            marketWeightAdjustment: (try? c.decode(Double.self, forKey: .marketWeightAdjustment)) ?? 0,
+            llmSignalWeight: (try? c.decode(Double.self, forKey: .llmSignalWeight)) ?? 0.55
+        )
+    }
 }
 
 public struct PredictionEvaluationSummary {
@@ -334,4 +398,14 @@ struct PredictionMatchContext {
     let keyAbsenceHome: String?
     let keyAbsenceAway: String?
     let consistencySignalSummary: String?
+    let llmLineup: String?
+    let llmPlayerValue: String?
+    let llmSharpOdds: String?
+    let llmClosingLine: String?
+    let llmHistoricalBaseline: String?
+    let llmScorelineCalibration: String?
+    let dataQuality: String?
+    let expectedHomeGoals: Double?
+    let expectedAwayGoals: Double?
+    let marketWeightHint: Double?
 }

@@ -76,6 +76,12 @@ public struct LearningEngine {
             return actualHomeGoals + actualAwayGoals >= 5
         }.count
         let highScoreOverpredictionBias = (Double(predictedHighScores) / sampleSize) - (Double(actualHighScores) / sampleSize)
+        let closingLineValues = evaluated.compactMap(\.evaluatedClosingLineValue)
+        let avgClosingLineValue = closingLineValues.isEmpty ? 0 : closingLineValues.reduce(0, +) / Double(closingLineValues.count)
+        let reliableLLMSignalRate = Double(evaluated.filter {
+            guard let quality = $0.dataQuality?.lowercased() else { return false }
+            return quality.contains("hoch") || quality.contains("mittel")
+        }.count) / sampleSize
 
         // Brier Scores (nur fuer Matches mit Markt-Quoten)
         let brierMatches = evaluated.filter { $0.quoteHome != nil && $0.quoteDraw != nil && $0.quoteAway != nil }
@@ -119,7 +125,9 @@ public struct LearningEngine {
         let weights = LearningCorrectionWeights(
             drawBoost: max(0, -drawBias),
             homeGoalReductionBias: max(0, avgHomeGoalOverprediction),
-            highScoreDampening: max(0, highScoreOverpredictionBias)
+            highScoreDampening: max(0, highScoreOverpredictionBias),
+            marketWeightAdjustment: min(0.15, max(0, brierScore - marketBrierScore) + max(0, -avgClosingLineValue)),
+            llmSignalWeight: min(0.75, max(0.25, reliableLLMSignalRate))
         )
         let weightsJSON = encodeWeights(weights)
         let summary = correctionSummary(

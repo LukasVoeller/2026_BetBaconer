@@ -138,16 +138,11 @@ struct ContentView: View {
                     SecureField("The Odds API Key", text: $state.theOddsAPIKey)
                         .textFieldStyle(.roundedBorder)
                 }
-                inputGroup(title: "API-Football Key") {
-                    SecureField("API-Football Key", text: $state.apiFootballAPIKey)
-                        .textFieldStyle(.roundedBorder)
-                }
                 inputGroup(title: "Codex-Laeufe") {
                     Stepper(value: $state.codexRunCount, in: 1...9) {
                         Text("\(state.codexRunCount) Lauf/Laeufe pro Analyse")
                     }
                 }
-                Toggle("Nachkorrektur aktiv", isOn: $state.learningPostProcessingEnabled)
             }
         }
     }
@@ -561,8 +556,13 @@ struct ContentView: View {
         if !state.suggestedTips.isEmpty {
             card(title: "Importierte Tipps", icon: "lightbulb") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Button("Alle als Text kopieren") {
-                        state.copySuggestedTipsAsText()
+                    HStack(spacing: 8) {
+                        Button("Alles kopieren") {
+                            state.copySuggestedTipsAsText()
+                        }
+                        Button("Ergebnisse kopieren") {
+                            state.copySuggestedResultsAsText()
+                        }
                     }
                     .buttonStyle(.bordered)
 
@@ -630,8 +630,13 @@ struct ContentView: View {
                     emptyState("Noch keine Tipps importiert.")
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
-                        Button("Alle als Text kopieren") {
-                            state.copySuggestedTipsAsText()
+                        HStack(spacing: 8) {
+                            Button("Alles kopieren") {
+                                state.copySuggestedTipsAsText()
+                            }
+                            Button("Ergebnisse kopieren") {
+                                state.copySuggestedResultsAsText()
+                            }
                         }
                         .buttonStyle(.bordered)
 
@@ -768,6 +773,8 @@ struct ContentView: View {
         let btts    = state.bttsOdds.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
         let hcp     = state.handicapOdds.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
         let weather = state.matchWeather.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
+        let enrichment = state.llmMatchEnrichments.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
+        let expectedGoals = state.matchExpectedGoals.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
         let referee = state.matchReferees.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
         let h2h     = state.finishedResults
             .filter { ($0.heim == tip.heim && $0.gast == tip.gast) || ($0.heim == tip.gast && $0.gast == tip.heim) }
@@ -799,6 +806,34 @@ struct ContentView: View {
         }()
         let h2hText: String? = h2h.isEmpty ? nil :
             h2h.map { "\($0.heim) \($0.toreHeim):\($0.toreGast) \($0.gast)" }.joined(separator: "  |  ")
+        let hasMarketFactors = odds != nil || tormarktEntry != nil || hcp != nil
+        let hasContextFactors = weather != nil || referee != nil || h2hText != nil || belastungText != nil || heimShots != nil || gastShots != nil
+        let enrichmentRows: [(String, String)] = enrichment.map { e in
+            [
+                ("Spielerimpact", e.playerImpact),
+                ("Spielerwert", e.playerValue),
+                ("Schiri/Spielstil", e.refereeStats),
+                ("Sharp-Odds", e.sharpOdds),
+                ("Closing/CLV", e.closingLine),
+                ("Lineup-News", e.lineup),
+                ("Lineup-Struktur", e.structuredLineup),
+                ("Historische Basis", e.historicalBaseline),
+                ("Scoreline-Kalib.", e.scorelineCalibration),
+                ("Gewichtung", e.learnedWeightHint),
+                ("Datenqualitaet", "\(e.dataQuality) | Confidence \(String(format: "%.0f%%", e.confidence * 100))"),
+                ("xG-Anpassung", String(format: "Angriff H %+.0f%% / A %+.0f%% | Defensive H %+.0f%% / A %+.0f%% | Total %+.2f | Lineup %+.0f%% | Spielerwert %+.0f%% | Sharp %+.0f%% | CLV %+.0f%% | Remis %+.0f%%",
+                                         e.homeAttackAdjustment * 100,
+                                         e.awayAttackAdjustment * 100,
+                                         e.homeDefenseAdjustment * 100,
+                                         e.awayDefenseAdjustment * 100,
+                                         e.totalGoalsAdjustment,
+                                         e.lineupImpact * 100,
+                                         e.playerValueImpact * 100,
+                                         e.sharpMarketDelta * 100,
+                                         e.closingLineValue * 100,
+                                         e.scorelineDrawCalibration * 100))
+            ]
+        } ?? []
 
         return VStack(alignment: .leading, spacing: 4) {
             // Header
@@ -814,51 +849,83 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // Metriken
-            VStack(alignment: .leading, spacing: 3) {
-                if let o = odds {
-                    tipMetricRow("Quoten", "1: \(o.quoteHeim)  X: \(o.quoteUnentschieden)  2: \(o.quoteGast)")
+            factorSection("Modell") {
+                if let expectedGoals {
+                    tipMetricRow("xG", String(format: "%@ %.2f | %@ %.2f", tip.heim, expectedGoals.home, tip.gast, expectedGoals.away))
                 }
-                if let tormarktEntry {
-                    tipMetricRow(tormarktEntry.label, tormarktEntry.value)
-                }
-                if let hcp {
-                    let hSign = hcp.homeHandicap >= 0 ? "+" : ""
-                    let aSign = hcp.awayHandicap >= 0 ? "+" : ""
-                    tipMetricRow("Handicap", "\(tip.heim) (\(hSign)\(hcp.homeHandicap)) \(hcp.homeQuote)  /  \(tip.gast) (\(aSign)\(hcp.awayHandicap)) \(hcp.awayQuote)")
-                }
-                if let weather {
-                    tipMetricRow("Wetter", tipWeatherText(weather))
-                }
-                if let referee {
-                    tipMetricRow("Schiedsrichter", referee.referee)
-                }
-                if let h2hText {
-                    tipMetricRow("H2H", h2hText)
-                }
-                if let belastungText {
-                    tipMetricRow("Belastung", belastungText)
-                }
-                if let hs = heimShots {
-                    tipMetricRow("Shots \(tip.heim)", String(format: "%.1f SOG/Sp. (Heim) | Verwertung %.0f%%", hs.shotsOnGoalPerGameHome, hs.shotsOnGoalConversionHome * 100))
-                }
-                if let gs = gastShots {
-                    tipMetricRow("Shots \(tip.gast)", String(format: "%.1f SOG/Sp. (Ausw.) | Verwertung %.0f%%", gs.shotsOnGoalPerGameAway, gs.shotsOnGoalConversionAway * 100))
+                tipMetricRow("Finale Auswahl", "Dixon-Coles/Poisson-Scoreline mit hoechster Einzelwahrscheinlichkeit")
+            }
+
+            if hasMarketFactors {
+                factorSection("Markt") {
+                    if let o = odds {
+                        tipMetricRow("Quoten", "1: \(o.quoteHeim)  X: \(o.quoteUnentschieden)  2: \(o.quoteGast)")
+                    }
+                    if let tormarktEntry {
+                        tipMetricRow(tormarktEntry.label, tormarktEntry.value)
+                    }
+                    if let hcp {
+                        let hSign = hcp.homeHandicap >= 0 ? "+" : ""
+                        let aSign = hcp.awayHandicap >= 0 ? "+" : ""
+                        tipMetricRow("Handicap", "\(tip.heim) (\(hSign)\(hcp.homeHandicap)) \(hcp.homeQuote)  /  \(tip.gast) (\(aSign)\(hcp.awayHandicap)) \(hcp.awayQuote)")
+                    }
                 }
             }
-            .padding(.top, 4)
+
+            if hasContextFactors {
+                factorSection("Kontext") {
+                    if let weather {
+                        tipMetricRow("Wetter", tipWeatherText(weather))
+                    }
+                    if let referee {
+                        tipMetricRow("Schiedsrichter", referee.referee)
+                    }
+                    if let h2hText {
+                        tipMetricRow("H2H", h2hText)
+                    }
+                    if let belastungText {
+                        tipMetricRow("Belastung", belastungText)
+                    }
+                    if let hs = heimShots {
+                        tipMetricRow("Shots \(tip.heim)", String(format: "%.1f SOG/Sp. (Heim) | Verwertung %.0f%%", hs.shotsOnGoalPerGameHome, hs.shotsOnGoalConversionHome * 100))
+                    }
+                    if let gs = gastShots {
+                        tipMetricRow("Shots \(tip.gast)", String(format: "%.1f SOG/Sp. (Ausw.) | Verwertung %.0f%%", gs.shotsOnGoalPerGameAway, gs.shotsOnGoalConversionAway * 100))
+                    }
+                }
+            }
+
+            if !enrichmentRows.isEmpty {
+                factorSection("LLM-Zusatzrecherche") {
+                    ForEach(enrichmentRows, id: \.0) { row in
+                        tipMetricRow(row.0, row.1)
+                    }
+                }
+            }
 
             // Ausfälle
             if !heimAbsences.isEmpty || !gastAbsences.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+                factorSection("Ausfaelle") {
                     if !heimAbsences.isEmpty { absenceGroup(team: tip.heim, absences: heimAbsences) }
                     if !gastAbsences.isEmpty { absenceGroup(team: tip.gast, absences: gastAbsences) }
                 }
-                .padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
+    }
+
+    private func factorSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            VStack(alignment: .leading, spacing: 3) {
+                content()
+            }
+        }
+        .padding(.top, 8)
     }
 
     private func tipMetricRow(_ label: String, _ value: String) -> some View {
