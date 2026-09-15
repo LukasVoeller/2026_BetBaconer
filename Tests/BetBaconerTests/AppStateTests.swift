@@ -107,6 +107,60 @@ final class AppStateTests {
         XCTAssertEqual(tips.first?.toreGast, 1)
     }
 
+    @Test
+    func testShortTermStabilityKeepsPreviousTipWithoutConsensus() {
+        let now = date(year: 2026, month: 9, day: 15)
+        let previous = predictionRun(
+            createdAt: now.addingTimeInterval(-30 * 60),
+            spieltag: 4,
+            modelName: "codex-cli-ensemble",
+            score: (3, 0),
+            isEvaluated: false
+        )
+        let current = [
+            SuggestedTip(spieltag: 4, heim: "Team A", gast: "Team B", toreHeim: 2, toreGast: 1, rationale: "new")
+        ]
+
+        let result = AppState.stabilizeShortTermTips(
+            current,
+            previousRuns: [previous],
+            currentRuns: [current],
+            seasonIdentifier: "2026",
+            now: now
+        )
+
+        XCTAssertEqual(result.stabilizedCount, 1)
+        XCTAssertEqual(result.tips.first?.toreHeim, 3)
+        XCTAssertEqual(result.tips.first?.toreGast, 0)
+    }
+
+    @Test
+    func testShortTermStabilityAllowsStrongConsensus() {
+        let now = date(year: 2026, month: 9, day: 15)
+        let previous = predictionRun(
+            createdAt: now.addingTimeInterval(-30 * 60),
+            spieltag: 4,
+            modelName: "codex-cli-ensemble",
+            score: (3, 0),
+            isEvaluated: false
+        )
+        let current = [
+            SuggestedTip(spieltag: 4, heim: "Team A", gast: "Team B", toreHeim: 2, toreGast: 1, rationale: "new")
+        ]
+
+        let result = AppState.stabilizeShortTermTips(
+            current,
+            previousRuns: [previous],
+            currentRuns: [current, current, current, current],
+            seasonIdentifier: "2026",
+            now: now
+        )
+
+        XCTAssertEqual(result.stabilizedCount, 0)
+        XCTAssertEqual(result.tips.first?.toreHeim, 2)
+        XCTAssertEqual(result.tips.first?.toreGast, 1)
+    }
+
     private func date(year: Int, month: Int, day: Int) -> Date {
         DateComponents(calendar: Calendar(identifier: .gregorian), year: year, month: month, day: day).date!
     }
@@ -123,13 +177,20 @@ final class AppStateTests {
         )
     }
 
-    private func predictionRun(createdAt: Date, spieltag: Int = 1, isEvaluated: Bool, seasonIdentifier: String = "2026") -> PredictionRun {
+    private func predictionRun(
+        createdAt: Date,
+        spieltag: Int = 1,
+        modelName: String = "test",
+        score: (home: Int, away: Int) = (1, 0),
+        isEvaluated: Bool,
+        seasonIdentifier: String = "2026"
+    ) -> PredictionRun {
         let runId = UUID()
         return PredictionRun(
             id: runId,
             createdAt: createdAt,
             spieltag: spieltag,
-            modelName: "test",
+            modelName: modelName,
             promptVersion: "v1",
             rawPrompt: "",
             rawResponse: "",
@@ -142,9 +203,9 @@ final class AppStateTests {
                     heim: "Team A",
                     gast: "Team B",
                     kickoffAt: seasonIdentifier,
-                    predictedHomeGoals: 1,
-                    predictedAwayGoals: 0,
-                    predictedOutcome: .homeWin,
+                    predictedHomeGoals: score.home,
+                    predictedAwayGoals: score.away,
+                    predictedOutcome: outcome(forHomeGoals: score.home, awayGoals: score.away),
                     rationale: "",
                     quoteHome: nil,
                     quoteDraw: nil,

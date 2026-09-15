@@ -163,6 +163,70 @@ final class AppState {
             }
     }
 
+    static func stabilizeShortTermTips(
+        _ tips: [SuggestedTip],
+        previousRuns: [PredictionRun],
+        currentRuns: [[SuggestedTip]],
+        seasonIdentifier: String,
+        now: Date = Date(),
+        window: TimeInterval = 2 * 60 * 60
+    ) -> (tips: [SuggestedTip], stabilizedCount: Int) {
+        guard let spieltag = tips.first?.spieltag, !currentRuns.isEmpty else {
+            return (tips, 0)
+        }
+
+        guard let previousRun = previousRuns
+            .filter({
+                $0.modelName == "codex-cli-ensemble"
+                    && $0.seasonIdentifier == seasonIdentifier
+                    && $0.spieltag == spieltag
+                    && !$0.matches.contains(where: \.isEvaluated)
+                    && now.timeIntervalSince($0.createdAt) >= 0
+                    && now.timeIntervalSince($0.createdAt) <= window
+            })
+            .sorted(by: { $0.createdAt > $1.createdAt })
+            .first else {
+            return (tips, 0)
+        }
+
+        let previousByKey = Dictionary(previousRun.matches.map {
+            (normalizedTeamKey($0.heim, $0.gast), $0)
+        }, uniquingKeysWith: { first, _ in first })
+        let consensusThreshold = max(2, Int(ceil(Double(currentRuns.count) * 0.75)))
+        var stabilizedCount = 0
+
+        let stabilizedTips = tips.map { tip -> SuggestedTip in
+            let key = normalizedTeamKey(tip.heim, tip.gast)
+            guard let previous = previousByKey[key],
+                  previous.predictedHomeGoals != tip.toreHeim || previous.predictedAwayGoals != tip.toreGast else {
+                return tip
+            }
+
+            let currentScore = "\(tip.toreHeim):\(tip.toreGast)"
+            let currentVotes = currentRuns.filter { run in
+                run.contains {
+                    normalizedTeamKey($0.heim, $0.gast) == key
+                        && "\($0.toreHeim):\($0.toreGast)" == currentScore
+                }
+            }.count
+            guard currentVotes < consensusThreshold else { return tip }
+
+            stabilizedCount += 1
+            return SuggestedTip(
+                spieltag: tip.spieltag,
+                heim: tip.heim,
+                gast: tip.gast,
+                toreHeim: previous.predictedHomeGoals,
+                toreGast: previous.predictedAwayGoals,
+                rationale: previous.rationale.isEmpty
+                    ? "Stabilisiert: neuer Kurzfrist-Run ohne starken Konsens."
+                    : previous.rationale
+            )
+        }
+
+        return (stabilizedTips, stabilizedCount)
+    }
+
     static func manualTips(from fields: [KicktippMatchField], upcomingMatches: [UpcomingMatch]) -> [SuggestedTip] {
         let matchesByKey = Dictionary(upcomingMatches.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
@@ -1454,7 +1518,16 @@ final class AppState {
             bettingOdds: bettingOdds,
             expectedGoals: expectedGoals
         )
-        importedResponse = tipWorkflowService.encodeTipsAsJSON(aggregatedTips)
+        let stabilized = Self.stabilizeShortTermTips(
+            aggregatedTips,
+            previousRuns: predictionRuns,
+            currentRuns: successfulRuns.map(\.tips),
+            seasonIdentifier: season.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        if stabilized.stabilizedCount > 0 {
+            appendConsole("[Stabilitaet] \(stabilized.stabilizedCount) Tipp(s) aus vorherigem Kurzfrist-Run beibehalten; neuer Lauf ohne starken Konsens.\n")
+        }
+        importedResponse = tipWorkflowService.encodeTipsAsJSON(stabilized.tips)
         importTipsFromResponse()
         if failedRuns > 0 {
             appendConsole("[Ensemble] \(failedRuns) Lauf/Laeufe wurden verworfen.\n")
