@@ -1392,7 +1392,7 @@ final class AppState {
 
     private func runPromptEnsembleWithCodex() async throws {
         let runCount = codexRunCount
-        var successfulRuns: [[SuggestedTip]] = []
+        var successfulRuns: [(tips: [SuggestedTip], rawResponse: String, runIndex: Int)] = []
         var failedRuns = 0
 
         for runIndex in 1...runCount {
@@ -1414,7 +1414,7 @@ final class AppState {
                 let output = try String(contentsOf: outputFile, encoding: .utf8)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let tips = try tipWorkflowService.parseTips(from: output, upcomingMatches: upcomingMatches)
-                successfulRuns.append(tips)
+                successfulRuns.append((tips: tips, rawResponse: output, runIndex: runIndex))
                 appendConsole("[Ensemble] Lauf \(runIndex)/\(runCount) erfolgreich geparst.\n")
             } catch {
                 failedRuns += 1
@@ -1436,12 +1436,20 @@ final class AppState {
         let expectedGoals = expectedGoalsByMatch()
         matchExpectedGoals = expectedGoals.values.sorted { $0.heim < $1.heim }
         appendConsole("[Ensemble] Poisson-Scoreline ueber \(successfulRuns.count) Lauf/Laeufe berechnet.\n")
+        for run in successfulRuns {
+            recordPredictionRun(
+                tips: run.tips,
+                rawPrompt: generatedPrompt,
+                rawResponse: run.rawResponse,
+                modelName: "codex-cli-run-\(run.runIndex)"
+            )
+        }
         appendConsole("[xG] " + expectedGoals.values
             .sorted { $0.heim < $1.heim }
             .map { String(format: "%@ %.2f : %.2f %@", $0.heim, $0.home, $0.away, $0.gast) }
             .joined(separator: " | ") + "\n")
         let aggregatedTips = try ensembleService.aggregateTips(
-            from: successfulRuns,
+            from: successfulRuns.map(\.tips),
             upcomingMatches: upcomingMatches,
             bettingOdds: bettingOdds,
             expectedGoals: expectedGoals
