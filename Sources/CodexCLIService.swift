@@ -101,8 +101,8 @@ struct CodexCLIService: Sendable {
                     if let data = standardInput.data(using: .utf8) {
                         stdin.fileHandleForWriting.write(data)
                     }
-                    try? stdin.fileHandleForWriting.close()
                 }
+                try? stdin.fileHandleForWriting.close()
             } catch {
                 stdout.fileHandleForReading.readabilityHandler = nil
                 stderr.fileHandleForReading.readabilityHandler = nil

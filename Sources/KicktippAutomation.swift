@@ -74,16 +74,20 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
 
     func loadTippabgabe(for competitionSlug: String) throws {
         let trimmed = competitionSlug.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        guard !trimmed.isEmpty,
+              trimmed.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil else {
             throw KicktippAutomationError.invalidCompetitionSlug
         }
         currentCompetitionSlug = trimmed
+        cachedOdds = []
+        cachedOddsLog = ""
         webView.load(URLRequest(url: URL(string: "https://www.kicktipp.de/\(trimmed)/tippabgabe")!))
     }
 
     func extractOdds(competitionSlug: String) async -> (odds: [BettingOdds], log: String) {
+        let trimmed = competitionSlug.trimmingCharacters(in: .whitespacesAndNewlines)
         // Return cached odds that were extracted when the page finished loading
-        if !cachedOdds.isEmpty {
+        if currentCompetitionSlug == trimmed, !cachedOdds.isEmpty {
             return (cachedOdds, "[Quoten] \(cachedOdds.count) gecachte Quoten verwendet.\n")
         }
         // Fallback: try live extraction
@@ -276,6 +280,17 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
             });
           }
 
+          if (homeInputs.length !== guestInputs.length) {
+            return JSON.stringify({
+              error: 'FIELD_MISMATCH',
+              url: location.href,
+              title: document.title,
+              homeCount: homeInputs.length,
+              guestCount: guestInputs.length,
+              bodySnippet: document.body.innerText.slice(0, 500)
+            });
+          }
+
           const matches = homeInputs.map((homeInput, i) => {
             const guestInput = guestInputs[i];
             // Walk up to the row to find team name cells
@@ -305,7 +320,8 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
 
         // Check for debug/error payload
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let errorCode = obj["error"] as? String, errorCode == "NO_FIELDS" {
+           let errorCode = obj["error"] as? String,
+           errorCode == "NO_FIELDS" || errorCode == "FIELD_MISMATCH" {
             let debugInfo = raw
             throw KicktippAutomationError.noBettingFieldsFound(debugInfo: debugInfo)
         }
@@ -338,16 +354,25 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
         let script = """
         (() => {
           const updates = \(jsonString);
+          const missing = [];
+          let applied = 0;
           for (const update of updates) {
-            const homeInput = document.querySelector(`[name="${update.heimField}"]`);
-            const guestInput = document.querySelector(`[name="${update.gastField}"]`);
-            if (!homeInput || !guestInput) continue;
+            const homeInput = document.getElementsByName(update.heimField)[0];
+            const guestInput = document.getElementsByName(update.gastField)[0];
+            if (!homeInput || !guestInput) {
+              missing.push(update.heimField + '/' + update.gastField);
+              continue;
+            }
             homeInput.value = update.heimValue;
             guestInput.value = update.gastValue;
             homeInput.dispatchEvent(new Event('input', { bubbles: true }));
             guestInput.dispatchEvent(new Event('input', { bubbles: true }));
             homeInput.dispatchEvent(new Event('change', { bubbles: true }));
             guestInput.dispatchEvent(new Event('change', { bubbles: true }));
+            applied++;
+          }
+          if (applied !== updates.length) {
+            throw new Error(`Nur ${applied}/${updates.length} Kicktipp-Feldpaare gesetzt. Fehlend: ${missing.join(', ')}`);
           }
           return 'ok';
         })();
@@ -377,6 +402,9 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
             return left === right || left.includes(right) || right.includes(left);
           };
           const rows = Array.from(document.querySelectorAll('#tippabgabeFragen tbody tr.datarow'));
+          const failures = [];
+          let applied = 0;
+          let expected = 0;
 
           for (const tip of tips) {
             const questionKey = normalize(tip.question);
@@ -384,17 +412,28 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
               const text = normalize(row.querySelector('.col1')?.textContent || row.textContent);
               return text.includes(questionKey) || questionKey.includes(text);
             });
-            if (!row) continue;
+            if (!row) {
+              failures.push(`Frage nicht gefunden: ${tip.question}`);
+              continue;
+            }
 
             const selects = Array.from(row.querySelectorAll('select'));
+            expected += Math.min((tip.answers || []).length, selects.length);
             (tip.answers || []).slice(0, selects.length).forEach((answer, index) => {
               const select = selects[index];
               const option = Array.from(select.options).find(option => same(option.textContent, answer));
-              if (!option) return;
+              if (!option) {
+                failures.push(`Antwort nicht gefunden: ${tip.question} -> ${answer}`);
+                return;
+              }
               select.value = option.value;
               select.dispatchEvent(new Event('input', { bubbles: true }));
               select.dispatchEvent(new Event('change', { bubbles: true }));
+              applied++;
             });
+          }
+          if (failures.length || applied !== expected) {
+            throw new Error(`Nur ${applied}/${expected} Saisonfragen-Antworten gesetzt. ${failures.join('; ')}`);
           }
         })();
         """#.replacingOccurrences(of: "__TIPS__", with: jsonString)
@@ -405,9 +444,10 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
     func submitTips() async throws {
         let script = #"""
         (() => {
-          const form = document.querySelector('form');
+          const field = document.querySelector('input[id$="_heimTipp"], input[name*="heimTipp"], input[name*="tippHeim"], input[name*="heim"], #tippabgabeFragen select');
+          const form = field?.closest('form');
           if (!form) {
-            throw new Error('Kein Formular gefunden.');
+            throw new Error('Kein Tippabgabe-Formular gefunden.');
           }
           const submitButton = form.querySelector('[type="submit"], button[name="submitbutton"], input[name="submitbutton"]');
           if (submitButton) {

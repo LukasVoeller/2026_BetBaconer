@@ -36,8 +36,8 @@ struct TipWorkflowService {
         let standings = buildStandings(from: finishedResults)
         let restDaysByTeam = buildRestDaysByTeam(finishedResults: finishedResults, upcomingMatches: upcomingMatches)
         let formTableSection = recentFormTable(from: finishedResults)
-        let metadataByTeam = Dictionary(uniqueKeysWithValues: teamMetadata.map { (normalizeTeamName($0.teamName), $0) })
-        let weatherByMatch = Dictionary(uniqueKeysWithValues: matchWeather.map { ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0) })
+        let metadataByTeam = Dictionary(teamMetadata.map { (normalizeTeamName($0.teamName), $0) }, uniquingKeysWith: { first, _ in first })
+        let weatherByMatch = Dictionary(matchWeather.map { ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0) }, uniquingKeysWith: { first, _ in first })
 
         // --- Lookup maps ---
         let normalizedOddsMap = Dictionary(
@@ -213,7 +213,9 @@ Gewichte die Bedeutung: Torwart / Topscorer / zentrale Verteidigung = hoher Einf
 
         // --- Konsistenzsignal aus früheren Generierungen ---
         let targetSpieltag = upcomingMatches.first?.spieltag
-        let relevantHistory = tipHistory.filter { $0.spieltag == targetSpieltag }
+        let relevantHistory = tipHistory.filter { record in
+            record.spieltag == targetSpieltag && bundesligaSeason(for: record.timestamp) == season
+        }
         let historySection: String
         if !relevantHistory.isEmpty {
             var predictions: [String: [String: Int]] = [:]
@@ -906,6 +908,12 @@ FORMTABELLE LETZTE \(allSpieldags.count) SPIELTAGE:
 
     private func parseDate(_ raw: String) -> Date? {
         iso8601WithFractional.date(from: raw) ?? iso8601.date(from: raw)
+    }
+
+    private func bundesligaSeason(for date: Date) -> Int {
+        let components = Calendar(identifier: .gregorian).dateComponents([.year, .month], from: date)
+        guard let year = components.year, let month = components.month else { return 0 }
+        return month >= 7 ? year : year - 1
     }
 
     private func daysBetween(_ from: Date, _ to: Date) -> Int {

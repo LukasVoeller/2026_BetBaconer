@@ -1,8 +1,10 @@
-#if canImport(XCTest)
-import XCTest
+import Foundation
+import Testing
 @testable import BetBaconer
 
-final class TipWorkflowServiceTests: XCTestCase {
+final class TipWorkflowServiceTests {
+
+    @Test
     func testBuildPromptAsksCodexToVerifyOddsViaWebResearch() {
         let prompt = TipWorkflowService().buildPrompt(
             season: 2026,
@@ -19,6 +21,42 @@ final class TipWorkflowServiceTests: XCTestCase {
         XCTAssertTrue(prompt.contains("gelieferten Quoten unplausibel"))
     }
 
+    @Test
+    func testBuildPromptUsesOnlySameSeasonHistory() {
+        let service = TipWorkflowService()
+        let prompt = service.buildPrompt(
+            season: 2026,
+            finishedResults: [],
+            upcomingMatches: [
+                UpcomingMatch(spieltag: 4, datum: "2026-09-18T20:30:00", heim: "Team A", gast: "Team B")
+            ],
+            tipHistory: [
+                TipGenerationRecord(
+                    id: UUID(),
+                    timestamp: DateComponents(calendar: Calendar(identifier: .gregorian), year: 2026, month: 5, day: 10).date!,
+                    spieltag: 4,
+                    tips: [
+                        SuggestedTip(spieltag: 4, heim: "Team A", gast: "Team B", toreHeim: 9, toreGast: 9, rationale: "")
+                    ],
+                    odds: []
+                ),
+                TipGenerationRecord(
+                    id: UUID(),
+                    timestamp: DateComponents(calendar: Calendar(identifier: .gregorian), year: 2026, month: 9, day: 10).date!,
+                    spieltag: 4,
+                    tips: [
+                        SuggestedTip(spieltag: 4, heim: "Team A", gast: "Team B", toreHeim: 1, toreGast: 0, rationale: "")
+                    ],
+                    odds: []
+                )
+            ]
+        )
+
+        XCTAssertTrue(prompt.contains("1x 1:0"))
+        XCTAssertTrue(!prompt.contains("9:9"))
+    }
+
+    @Test
     func testParseTipsAcceptsWrappedJSON() throws {
         let service = TipWorkflowService()
         let upcomingMatches = [
@@ -46,6 +84,7 @@ final class TipWorkflowServiceTests: XCTestCase {
         XCTAssertEqual(tips.first?.toreGast, 1)
     }
 
+    @Test
     func testParseTipsRejectsFixtureMismatch() {
         let service = TipWorkflowService()
         let upcomingMatches = [
@@ -69,6 +108,7 @@ final class TipWorkflowServiceTests: XCTestCase {
         }
     }
 
+    @Test
     func testParseSeasonQuestionTipsAcceptsWrappedJSON() throws {
         let service = TipWorkflowService()
         let content = """
@@ -88,6 +128,7 @@ final class TipWorkflowServiceTests: XCTestCase {
         XCTAssertEqual(tips.first?.answers, ["Bayer 04 Leverkusen"])
     }
 
+    @Test
     func testParseLLMMatchEnrichmentsClampsAdjustments() throws {
         let service = TipWorkflowService()
         let matches = [
@@ -144,6 +185,7 @@ final class TipWorkflowServiceTests: XCTestCase {
         XCTAssertEqual(enrichments[0].structuredLineup, "Team A mit Stammelf")
     }
 
+    @Test
     func testParseClosingLineUpdatesClampsCLV() throws {
         let content = """
         {
@@ -167,4 +209,3 @@ final class TipWorkflowServiceTests: XCTestCase {
         XCTAssertEqual(updates[0].closingLine, "Closing 1 1.90 / X 3.50 / 2 4.00")
     }
 }
-#endif

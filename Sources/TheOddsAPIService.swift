@@ -108,25 +108,31 @@ struct TheOddsAPIService {
     }
 
     private func aggregatedOverUnder(for event: OddsEvent) -> OverUnderOdds? {
-        var overPrices: [Double] = []
-        var underPrices: [Double] = []
-        var linePrices: [Double] = []
+        var pricesByLine: [Double: (over: [Double], under: [Double])] = [:]
 
         for bookmaker in event.bookmakers {
             guard let market = bookmaker.markets.first(where: { $0.key == "totals" }) else { continue }
             for outcome in market.outcomes {
                 let point = outcome.point ?? 2.5
-                linePrices.append(point)
                 if outcome.name.lowercased() == "over" {
-                    overPrices.append(outcome.price)
+                    pricesByLine[point, default: (over: [], under: [])].over.append(outcome.price)
                 } else if outcome.name.lowercased() == "under" {
-                    underPrices.append(outcome.price)
+                    pricesByLine[point, default: (over: [], under: [])].under.append(outcome.price)
                 }
             }
         }
 
-        guard let over = median(overPrices), let under = median(underPrices) else { return nil }
-        let line = median(linePrices) ?? 2.5
+        guard let (line, prices) = pricesByLine
+            .filter({ !$0.value.over.isEmpty && !$0.value.under.isEmpty })
+            .sorted(by: { lhs, rhs in
+                let lhsCount = lhs.value.over.count + lhs.value.under.count
+                let rhsCount = rhs.value.over.count + rhs.value.under.count
+                if lhsCount != rhsCount { return lhsCount > rhsCount }
+                return abs(lhs.key - 2.5) < abs(rhs.key - 2.5)
+            })
+            .first,
+              let over = median(prices.over),
+              let under = median(prices.under) else { return nil }
         return OverUnderOdds(
             heim: event.homeTeam,
             gast: event.awayTeam,
@@ -161,33 +167,37 @@ struct TheOddsAPIService {
     }
 
     private func aggregatedHandicap(for event: OddsEvent) -> HandicapOdds? {
-        var homePrices: [Double] = []
-        var awayPrices: [Double] = []
-        var homePoints: [Double] = []
-        var awayPoints: [Double] = []
+        var pricesByHomePoint: [Double: (home: [Double], away: [Double])] = [:]
 
         for bookmaker in event.bookmakers {
             guard let market = bookmaker.markets.first(where: { $0.key == "asian_handicap" }) else { continue }
             for outcome in market.outcomes {
+                guard let point = outcome.point else { continue }
                 if teamNamesLikelyMatch(outcome.name, event.homeTeam) {
-                    homePrices.append(outcome.price)
-                    if let point = outcome.point { homePoints.append(point) }
+                    pricesByHomePoint[point, default: (home: [], away: [])].home.append(outcome.price)
                 } else if teamNamesLikelyMatch(outcome.name, event.awayTeam) {
-                    awayPrices.append(outcome.price)
-                    if let point = outcome.point { awayPoints.append(point) }
+                    pricesByHomePoint[-point, default: (home: [], away: [])].away.append(outcome.price)
                 }
             }
         }
 
-        guard let homeQuote = median(homePrices), let awayQuote = median(awayPrices) else { return nil }
-        let homeHandicap = median(homePoints) ?? 0
-        let awayHandicap = median(awayPoints) ?? 0
+        guard let (homeHandicap, prices) = pricesByHomePoint
+            .filter({ !$0.value.home.isEmpty && !$0.value.away.isEmpty })
+            .sorted(by: { lhs, rhs in
+                let lhsCount = lhs.value.home.count + lhs.value.away.count
+                let rhsCount = rhs.value.home.count + rhs.value.away.count
+                if lhsCount != rhsCount { return lhsCount > rhsCount }
+                return abs(lhs.key) < abs(rhs.key)
+            })
+            .first,
+              let homeQuote = median(prices.home),
+              let awayQuote = median(prices.away) else { return nil }
         return HandicapOdds(
             heim: event.homeTeam,
             gast: event.awayTeam,
             homeHandicap: homeHandicap,
             homeQuote: format(decimal: homeQuote),
-            awayHandicap: awayHandicap,
+            awayHandicap: -homeHandicap,
             awayQuote: format(decimal: awayQuote)
         )
     }

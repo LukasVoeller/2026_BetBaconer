@@ -70,7 +70,7 @@ struct PredictionStore {
         }
 
         return records.map { record in
-            let seasonIdentifier = String(Calendar(identifier: .gregorian).component(.year, from: record.timestamp))
+            let seasonIdentifier = String(Self.bundesligaSeason(for: record.timestamp))
             let matches = record.tips.map { tip in
                 let odds = record.odds.first { normalizedTeamKey($0.heim, $0.gast) == normalizedTeamKey(tip.heim, tip.gast) }
                 return MatchPrediction(
@@ -128,6 +128,12 @@ struct PredictionStore {
     private func parseQuote(_ raw: String?) -> Double? {
         guard let raw else { return nil }
         return Double(raw.replacingOccurrences(of: ",", with: "."))
+    }
+
+    private static func bundesligaSeason(for date: Date) -> Int {
+        let components = Calendar(identifier: .gregorian).dateComponents([.year, .month], from: date)
+        guard let year = components.year, let month = components.month else { return 0 }
+        return month >= 7 ? year : year - 1
     }
 
     private static var defaultFileURL: URL {

@@ -1,9 +1,10 @@
-#if canImport(XCTest)
 import Foundation
-import XCTest
+import Testing
 @testable import BetBaconer
 
-final class PredictionStoreTests: XCTestCase {
+final class PredictionStoreTests {
+
+    @Test
     func testSaveAndLoadRoundTrip() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -69,5 +70,34 @@ final class PredictionStoreTests: XCTestCase {
         XCTAssertEqual(loaded.runs.first?.spieltag, 26)
         XCTAssertEqual(loaded.learningState.sampleSize, 0)
     }
+
+    @Test
+    func testLegacyMigrationUsesBundesligaSeason() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let legacyURL = directory.appendingPathComponent("tip-history.json")
+        let records = [
+            TipGenerationRecord(
+                id: UUID(),
+                timestamp: DateComponents(calendar: Calendar(identifier: .gregorian), year: 2026, month: 5, day: 10).date!,
+                spieltag: 34,
+                tips: [
+                    SuggestedTip(spieltag: 34, heim: "Team A", gast: "Team B", toreHeim: 1, toreGast: 0, rationale: "")
+                ],
+                odds: []
+            )
+        ]
+        try JSONEncoder().encode(records).write(to: legacyURL)
+
+        let store = PredictionStore(
+            fileURL: directory.appendingPathComponent("learning-store.json"),
+            legacyHistoryURL: legacyURL
+        )
+
+        let loaded = try store.load()
+
+        XCTAssertEqual(loaded.runs.first?.seasonIdentifier, "2025")
+    }
 }
-#endif

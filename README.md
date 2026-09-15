@@ -114,7 +114,7 @@ Ohne The-Odds-API-Key nutzt die App Kicktipp-Quoten als Fallback. Nicht per API 
 
 ```bash
 swift build
-swift test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 swift run
 ```
 

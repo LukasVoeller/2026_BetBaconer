@@ -56,7 +56,7 @@ public struct PredictionEvaluator {
     }
 
     public func evaluateMatches(_ predictions: [MatchPrediction], against finishedMatches: [FinishedMatch]) -> [MatchPrediction] {
-        let index = Dictionary(uniqueKeysWithValues: finishedMatches.map { (finishedMatchKey($0), $0) })
+        let index = Dictionary(finishedMatches.map { (finishedMatchKey($0), $0) }, uniquingKeysWith: { first, _ in first })
         return predictions.map { prediction in
             guard !prediction.isEvaluated,
                   let finishedMatch = index[predictionLookupKey(prediction)] else {

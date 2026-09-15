@@ -1,8 +1,10 @@
-#if canImport(XCTest)
-import XCTest
+import Foundation
+import Testing
 @testable import BetBaconer
 
-final class TeamRatingServiceTests: XCTestCase {
+final class TeamRatingServiceTests {
+
+    @Test
     func testFitRatesStrongerAttackHigher() throws {
         let matches = [
             FinishedMatch(spieltag: 1, datum: "2026-08-01T15:30:00Z", heim: "Team A", gast: "Team B", toreHeim: 4, toreGast: 0),
@@ -33,4 +35,3 @@ final class TeamRatingServiceTests: XCTestCase {
         XCTAssertGreaterThan(strong.home, strong.away)
     }
 }
-#endif

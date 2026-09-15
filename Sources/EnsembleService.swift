@@ -55,10 +55,10 @@ struct EnsembleService {
 
     /// Returns betting odds keyed by normalized match key, aligned to upcoming matches.
     func remappedOdds(bettingOdds: [BettingOdds], upcomingMatches: [UpcomingMatch]) -> [String: BettingOdds] {
-        let oddsNormMap = Dictionary(uniqueKeysWithValues: bettingOdds.map {
+        let oddsNormMap = Dictionary(bettingOdds.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
-        })
-        return Dictionary(uniqueKeysWithValues: upcomingMatches.compactMap { match in
+        }, uniquingKeysWith: { first, _ in first })
+        return Dictionary(upcomingMatches.compactMap { match in
             guard let odds = oddsNormMap[normalizedTeamKey(match.heim, match.gast)] else { return nil }
             return (
                 normalizedTeamKey(match.heim, match.gast),
@@ -70,7 +70,7 @@ struct EnsembleService {
                     quoteGast: odds.quoteGast
                 )
             )
-        })
+        }, uniquingKeysWith: { first, _ in first })
     }
 
     // MARK: - Private

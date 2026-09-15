@@ -504,7 +504,7 @@ struct ContentView: View {
                                 historyHeaderRow()
                                 ForEach(orderedTips) { tip in
                                     let oddsMap = historyOddsMap(for: record)
-                                    let actualResult = actualResultText(for: tip)
+                                    let actualResult = actualResultText(for: tip, in: record)
                                     HStack(spacing: 0) {
                                         Text("\(tip.heim) vs. \(tip.gast)")
                                             .font(.body)
@@ -975,7 +975,7 @@ struct ContentView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             ForEach(state.orderedTips(record.tips)) { tip in
-                let actualResult = actualResultText(for: tip)
+                let actualResult = actualResultText(for: tip, in: record)
                 HStack {
                     Text("\(tip.heim) vs. \(tip.gast)")
                         .font(.caption)
@@ -1029,13 +1029,22 @@ struct ContentView: View {
         .padding(.bottom, 2)
     }
 
-    private func actualResultText(for tip: SuggestedTip) -> String {
+    private func actualResultText(for tip: SuggestedTip, in record: TipGenerationRecord) -> String {
+        let recordSeason = String(AppState.currentBundesligaSeason(for: record.timestamp))
         if let prediction = state.predictionRuns
             .reversed()
-            .flatMap(\.matches)
+            .first(where: { run in
+                run.seasonIdentifier == recordSeason
+                && run.spieltag == tip.spieltag
+                && run.matches.contains { prediction in
+                    normalizedTeamKey(prediction.heim, prediction.gast) == normalizedTeamKey(tip.heim, tip.gast)
+                    && prediction.actualHomeGoals != nil
+                    && prediction.actualAwayGoals != nil
+                }
+            })?
+            .matches
             .first(where: { prediction in
-                prediction.spieltag == tip.spieltag
-                && normalizedTeamKey(prediction.heim, prediction.gast) == normalizedTeamKey(tip.heim, tip.gast)
+                normalizedTeamKey(prediction.heim, prediction.gast) == normalizedTeamKey(tip.heim, tip.gast)
                 && prediction.actualHomeGoals != nil
                 && prediction.actualAwayGoals != nil
             }),
@@ -1044,6 +1053,7 @@ struct ContentView: View {
             return "\(homeGoals):\(awayGoals)"
         }
 
+        guard state.season.trimmingCharacters(in: .whitespacesAndNewlines) == recordSeason else { return "-" }
         if let result = state.finishedResults.first(where: {
             $0.spieltag == tip.spieltag
             && normalizedTeamKey($0.heim, $0.gast) == normalizedTeamKey(tip.heim, tip.gast)
@@ -1055,7 +1065,7 @@ struct ContentView: View {
     }
 
     private func historyOddsMap(for record: TipGenerationRecord) -> [String: BettingOdds] {
-        Dictionary(uniqueKeysWithValues: record.odds.map { (normalizedTeamKey($0.heim, $0.gast), $0) })
+        Dictionary(record.odds.map { (normalizedTeamKey($0.heim, $0.gast), $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     private func emptyState(_ text: String) -> some View {

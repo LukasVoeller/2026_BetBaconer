@@ -1,9 +1,11 @@
-#if canImport(XCTest)
-import XCTest
+import Foundation
+import Testing
 @testable import BetBaconer
 
 @MainActor
-final class AppStateTests: XCTestCase {
+final class AppStateTests {
+
+    @Test
     func testCurrentBundesligaSeasonUsesSummerSeasonStart() {
         var components = DateComponents()
         components.calendar = Calendar(identifier: .gregorian)
@@ -17,6 +19,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(AppState.currentBundesligaSeason(for: components.date!), 2025)
     }
 
+    @Test
     func testRestoresUpcomingMatchesFromLatestTipHistory() {
         let record = TipGenerationRecord(
             id: UUID(),
@@ -35,6 +38,18 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(matches.first?.gast, "Team B")
     }
 
+    @Test
+    func testRestoresUpcomingMatchesFromSameSeasonPredictionRun() {
+        let record = tipRecord(timestamp: date(year: 2026, month: 9, day: 10), spieltag: 4)
+        let oldRun = predictionRun(createdAt: Date(timeIntervalSince1970: 2), spieltag: 4, isEvaluated: false, seasonIdentifier: "2025")
+        let currentRun = predictionRun(createdAt: Date(timeIntervalSince1970: 1), spieltag: 4, isEvaluated: false, seasonIdentifier: "2026")
+
+        let matches = AppState.upcomingMatchesForLatestTips(record, predictionRuns: [oldRun, currentRun])
+
+        XCTAssertEqual(matches.first?.datum, "2026")
+    }
+
+    @Test
     func testEvaluatedMatchdayRunsKeepsOnlyLatestEvaluatedRunPerMatchday() {
         let oldRun = predictionRun(createdAt: Date(timeIntervalSince1970: 1), isEvaluated: true)
         let newRun = predictionRun(createdAt: Date(timeIntervalSince1970: 2), isEvaluated: true)
@@ -45,6 +60,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(runs.map(\.id), [newRun.id])
     }
 
+    @Test
     func testLatestTipHistoryKeepsOnlyNewestRecordPerMatchday() {
         let oldRecord = tipRecord(timestamp: Date(timeIntervalSince1970: 1), spieltag: 1)
         let newRecord = tipRecord(timestamp: Date(timeIntervalSince1970: 2), spieltag: 1)
@@ -55,6 +71,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(records.map(\.id), [otherRecord.id, newRecord.id])
     }
 
+    @Test
     func testLatestTipHistorySortsCurrentSeasonBeforePreviousSeason() {
         let records = AppState.latestTipHistory(from: [
             tipRecord(timestamp: date(year: 2026, month: 5, day: 10), spieltag: 34),
@@ -66,6 +83,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(records.map(\.spieltag), [4, 3, 34, 33])
     }
 
+    @Test
     func testManualTipsUsesExistingKicktippFieldValues() {
         let tips = AppState.manualTips(
             from: [
@@ -105,7 +123,7 @@ final class AppStateTests: XCTestCase {
         )
     }
 
-    private func predictionRun(createdAt: Date, spieltag: Int = 1, isEvaluated: Bool) -> PredictionRun {
+    private func predictionRun(createdAt: Date, spieltag: Int = 1, isEvaluated: Bool, seasonIdentifier: String = "2026") -> PredictionRun {
         let runId = UUID()
         return PredictionRun(
             id: runId,
@@ -115,7 +133,7 @@ final class AppStateTests: XCTestCase {
             promptVersion: "v1",
             rawPrompt: "",
             rawResponse: "",
-            seasonIdentifier: "2026",
+            seasonIdentifier: seasonIdentifier,
             matches: [
                 MatchPrediction(
                     id: UUID(),
@@ -123,7 +141,7 @@ final class AppStateTests: XCTestCase {
                     spieltag: spieltag,
                     heim: "Team A",
                     gast: "Team B",
-                    kickoffAt: "",
+                    kickoffAt: seasonIdentifier,
                     predictedHomeGoals: 1,
                     predictedAwayGoals: 0,
                     predictedOutcome: .homeWin,
@@ -157,4 +175,3 @@ final class AppStateTests: XCTestCase {
         )
     }
 }
-#endif

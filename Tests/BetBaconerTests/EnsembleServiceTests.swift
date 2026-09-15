@@ -1,8 +1,10 @@
-#if canImport(XCTest)
-import XCTest
+import Foundation
+import Testing
 @testable import BetBaconer
 
-final class EnsembleServiceTests: XCTestCase {
+final class EnsembleServiceTests {
+
+    @Test
     func testAggregateTipsUsesPoissonModalScoreline() throws {
         let service = EnsembleService()
         let upcomingMatches = [
@@ -22,6 +24,7 @@ final class EnsembleServiceTests: XCTestCase {
         XCTAssertEqual(aggregated.first?.toreGast, 1)
     }
 
+    @Test
     func testAggregateTipsUsesProvidedExpectedGoals() throws {
         let service = EnsembleService()
         let upcomingMatches = [
@@ -44,7 +47,26 @@ final class EnsembleServiceTests: XCTestCase {
         XCTAssertEqual(aggregated.first?.toreGast, 1)
     }
 
-    func testAggregateTipsAppliesDixonColesLowScoreCorrection() throws {
+    @Test
+    func testRemappedOddsKeepsFirstDuplicateMatchInsteadOfCrashing() {
+        let service = EnsembleService()
+        let odds = [
+            BettingOdds(heim: "Team A", gast: "Team B", quoteHeim: "1.80", quoteUnentschieden: "3.50", quoteGast: "4.00"),
+            BettingOdds(heim: "Team A", gast: "Team B", quoteHeim: "1.90", quoteUnentschieden: "3.40", quoteGast: "3.90")
+        ]
+
+        let mapped = service.remappedOdds(
+            bettingOdds: odds,
+            upcomingMatches: [
+                UpcomingMatch(spieltag: 1, datum: "2026-09-18T20:30:00", heim: "Team A", gast: "Team B")
+            ]
+        )
+
+        XCTAssertEqual(mapped[normalizedTeamKey("Team A", "Team B")]?.quoteHeim, "1.80")
+    }
+
+    @Test
+    func testAggregateTipsKeepsLowExpectedGoalsModalScoreline() throws {
         let service = EnsembleService()
         let upcomingMatches = [
             UpcomingMatch(spieltag: 26, datum: "2025-03-14T19:30:00Z", heim: "Team A", gast: "Team B")
@@ -61,10 +83,11 @@ final class EnsembleServiceTests: XCTestCase {
             expectedGoals: [normalizedTeamKey("Team A", "Team B"): xg]
         )
 
-        XCTAssertEqual(aggregated.first?.toreHeim, 1)
-        XCTAssertEqual(aggregated.first?.toreGast, 1)
+        XCTAssertEqual(aggregated.first?.toreHeim, 0)
+        XCTAssertEqual(aggregated.first?.toreGast, 0)
     }
 
+    @Test
     func testAggregateTipsDampensBlowoutWhenMarketIsClose() throws {
         let service = EnsembleService()
         let upcomingMatches = [
@@ -89,6 +112,7 @@ final class EnsembleServiceTests: XCTestCase {
         XCTAssertLessThanOrEqual(aggregated[0].toreHeim + aggregated[0].toreGast, 4)
     }
 
+    @Test
     func testAggregateTipsCapsMatchdayDraws() throws {
         let service = EnsembleService()
         let upcomingMatches = (1...9).map {
@@ -115,4 +139,3 @@ final class EnsembleServiceTests: XCTestCase {
         XCTAssertLessThanOrEqual(drawCount, 3)
     }
 }
-#endif

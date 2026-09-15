@@ -19,7 +19,7 @@ struct WeatherService: Sendable {
     }
 
     func fetchWeather(for upcomingMatches: [UpcomingMatch], teamMetadata: [TeamMetadata]) async throws -> [MatchWeather] {
-        let metadataByTeam = Dictionary(uniqueKeysWithValues: teamMetadata.map { (normalizeTeamName($0.teamName), $0) })
+        let metadataByTeam = Dictionary(teamMetadata.map { (normalizeTeamName($0.teamName), $0) }, uniquingKeysWith: { first, _ in first })
         var weatherEntries: [MatchWeather] = []
 
         for match in upcomingMatches {
@@ -85,15 +85,17 @@ struct WeatherService: Sendable {
     }
 
     private func fetchForecast(latitude: Double, longitude: Double, at date: Date) async throws -> ForecastPoint? {
-        let hourFormatter = ISO8601DateFormatter()
-        hourFormatter.formatOptions = [.withInternetDateTime]
-
         let dateFormatter = DateFormatter()
         dateFormatter.locale = Locale(identifier: "en_US_POSIX")
         dateFormatter.timeZone = TimeZone(identifier: "Europe/Berlin")
         dateFormatter.dateFormat = "yyyy-MM-dd"
 
-        let hourKey = String(hourFormatter.string(from: date).prefix(13)) + ":00"
+        let hourFormatter = DateFormatter()
+        hourFormatter.locale = Locale(identifier: "en_US_POSIX")
+        hourFormatter.timeZone = TimeZone(identifier: "Europe/Berlin")
+        hourFormatter.dateFormat = "yyyy-MM-dd'T'HH:00"
+
+        let hourKey = hourFormatter.string(from: date)
         let dateKey = dateFormatter.string(from: date)
 
         var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
@@ -127,6 +129,8 @@ struct WeatherService: Sendable {
     private func parseDate(_ raw: String) -> Date? {
         Self.makeISO8601Formatter(withFractionalSeconds: true).date(from: raw)
             ?? Self.makeISO8601Formatter(withFractionalSeconds: false).date(from: raw)
+            ?? Self.makeLocalDateFormatter("yyyy-MM-dd'T'HH:mm:ss.SSS").date(from: raw)
+            ?? Self.makeLocalDateFormatter("yyyy-MM-dd'T'HH:mm:ss").date(from: raw)
     }
 
     private func normalizeTeamName(_ name: String) -> String {
@@ -156,6 +160,14 @@ struct WeatherService: Sendable {
         formatter.formatOptions = withFractionalSeconds
             ? [.withInternetDateTime, .withFractionalSeconds]
             : [.withInternetDateTime]
+        return formatter
+    }
+
+    private static func makeLocalDateFormatter(_ format: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Europe/Berlin")
+        formatter.dateFormat = format
         return formatter
     }
 }

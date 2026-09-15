@@ -130,8 +130,9 @@ final class AppState {
     }
 
     static func upcomingMatchesForLatestTips(_ record: TipGenerationRecord, predictionRuns: [PredictionRun]) -> [UpcomingMatch] {
+        let recordSeason = String(currentBundesligaSeason(for: record.timestamp))
         let latestRun = predictionRuns
-            .filter { $0.spieltag == record.spieltag }
+            .filter { $0.seasonIdentifier == recordSeason && $0.spieltag == record.spieltag }
             .max { $0.createdAt < $1.createdAt }
 
         if let latestRun {
@@ -163,9 +164,9 @@ final class AppState {
     }
 
     static func manualTips(from fields: [KicktippMatchField], upcomingMatches: [UpcomingMatch]) -> [SuggestedTip] {
-        let matchesByKey = Dictionary(uniqueKeysWithValues: upcomingMatches.map {
+        let matchesByKey = Dictionary(upcomingMatches.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
-        })
+        }, uniquingKeysWith: { first, _ in first })
 
         return fields.compactMap { field in
             guard let match = matchesByKey[normalizedTeamKey(field.heim, field.gast)],
@@ -595,7 +596,7 @@ final class AppState {
         }
 
         let text = orderedSuggestedTips
-            .map(formattedSuggestedTipText)
+            .map(formatter)
             .joined(separator: "\n\n")
 
         let pasteboard = NSPasteboard.general
@@ -855,27 +856,27 @@ final class AppState {
     private func expectedGoalsByMatch() -> [String: MatchExpectedGoals] {
         let ratingModel = teamRatingService.fit(finishedResults: finishedResults)
         let oddsByKey = ensembleService.remappedOdds(bettingOdds: bettingOdds, upcomingMatches: upcomingMatches)
-        let overUnderByKey = Dictionary(uniqueKeysWithValues: overUnderOdds.map {
+        let overUnderByKey = Dictionary(overUnderOdds.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
-        })
-        let bttsByKey = Dictionary(uniqueKeysWithValues: bttsOdds.map {
+        }, uniquingKeysWith: { first, _ in first })
+        let bttsByKey = Dictionary(bttsOdds.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
-        })
-        let handicapByKey = Dictionary(uniqueKeysWithValues: handicapOdds.map {
+        }, uniquingKeysWith: { first, _ in first })
+        let handicapByKey = Dictionary(handicapOdds.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
-        })
+        }, uniquingKeysWith: { first, _ in first })
         let restDays = buildRestDaysByTeam()
         let absencesByTeam = Dictionary(grouping: playerAbsences) { normalizeTeamName($0.teamName) }
         let extrasByTeam = Dictionary(grouping: teamExtraFixtures) { normalizeTeamName($0.teamName) }
-        let shotsByTeam = Dictionary(uniqueKeysWithValues: teamShotsStats.map { (normalizeTeamName($0.teamName), $0) })
-        let weatherByMatch = Dictionary(uniqueKeysWithValues: matchWeather.map {
+        let shotsByTeam = Dictionary(teamShotsStats.map { (normalizeTeamName($0.teamName), $0) }, uniquingKeysWith: { first, _ in first })
+        let weatherByMatch = Dictionary(matchWeather.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
-        })
-        let enrichmentByMatch = Dictionary(uniqueKeysWithValues: llmMatchEnrichments.map {
+        }, uniquingKeysWith: { first, _ in first })
+        let enrichmentByMatch = Dictionary(llmMatchEnrichments.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
-        })
+        }, uniquingKeysWith: { first, _ in first })
 
-        return Dictionary(uniqueKeysWithValues: upcomingMatches.map { match in
+        return Dictionary(upcomingMatches.map { match in
             let homeStats = teamPerformance(for: match.heim)
             let awayStats = teamPerformance(for: match.gast)
             let homeMatchCount = finishedResults.filter { $0.heim == match.heim || $0.gast == match.heim }.count
@@ -1043,7 +1044,7 @@ final class AppState {
                     marketWeightHint: marketWeightHint
                 )
             )
-        })
+        }, uniquingKeysWith: { first, _ in first })
     }
 
     private func venuePerformance(for team: String, isHome: Bool) -> (goalsPerGame: Double, concededPerGame: Double) {
@@ -1371,9 +1372,9 @@ final class AppState {
     }
 
     private func applyClosingLineUpdates(_ updates: [LLMClosingLineUpdate], to runs: [PredictionRun]) -> [PredictionRun] {
-        let updatesByKey = Dictionary(uniqueKeysWithValues: updates.map {
+        let updatesByKey = Dictionary(updates.map {
             ("\($0.spieltag)|\(normalizedTeamKey($0.heim, $0.gast))", $0)
-        })
+        }, uniquingKeysWith: { first, _ in first })
         return runs.map { run in
             var copy = run
             copy.matches = run.matches.map { match in
@@ -1480,20 +1481,21 @@ final class AppState {
     }
 
     private func hasPredictionRun(modelName: String, tips: [SuggestedTip]) -> Bool {
-        let expected = Dictionary(uniqueKeysWithValues: tips.map {
+        let expected = Dictionary(tips.map {
             (normalizedTeamKey($0.heim, $0.gast), "\($0.toreHeim):\($0.toreGast)")
-        })
+        }, uniquingKeysWith: { first, _ in first })
 
         return predictionRuns.contains { run in
             guard run.modelName == modelName,
+                  run.seasonIdentifier == season.trimmingCharacters(in: .whitespacesAndNewlines),
                   run.spieltag == tips.first?.spieltag,
                   run.matches.count == tips.count else {
                 return false
             }
 
-            let actual = Dictionary(uniqueKeysWithValues: run.matches.map {
+            let actual = Dictionary(run.matches.map {
                 (normalizedTeamKey($0.heim, $0.gast), "\($0.predictedHomeGoals):\($0.predictedAwayGoals)")
-            })
+            }, uniquingKeysWith: { first, _ in first })
             return actual == expected
         }
     }
@@ -1503,8 +1505,9 @@ final class AppState {
 
         let runId = UUID()
         let createdAt = Date()
-        let seasonIdentifier = season.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : season
-        let contexts = Dictionary(uniqueKeysWithValues: buildPredictionContexts().map { (normalizedTeamKey($0.upcomingMatch.heim, $0.upcomingMatch.gast), $0) })
+        let trimmedSeason = season.trimmingCharacters(in: .whitespacesAndNewlines)
+        let seasonIdentifier = trimmedSeason.isEmpty ? "unknown" : trimmedSeason
+        let contexts = Dictionary(buildPredictionContexts().map { (normalizedTeamKey($0.upcomingMatch.heim, $0.upcomingMatch.gast), $0) }, uniquingKeysWith: { first, _ in first })
         let matches = tips.map { tip -> MatchPrediction in
             let context = contexts[normalizedTeamKey(tip.heim, tip.gast)]
             return MatchPrediction(
@@ -1573,10 +1576,13 @@ final class AppState {
     private func buildPredictionContexts() -> [PredictionMatchContext] {
         let oddsByKey = ensembleService.remappedOdds(bettingOdds: bettingOdds, upcomingMatches: upcomingMatches)
         let groupedAbsences = Dictionary(grouping: playerAbsences) { normalizeTeamName($0.teamName) }
-        let expectedGoalsByKey = Dictionary(uniqueKeysWithValues: matchExpectedGoals.map { (normalizedTeamKey($0.heim, $0.gast), $0) })
-        let enrichmentsByKey = Dictionary(uniqueKeysWithValues: llmMatchEnrichments.map { (normalizedTeamKey($0.heim, $0.gast), $0) })
+        let expectedGoalsByKey = Dictionary(matchExpectedGoals.map { (normalizedTeamKey($0.heim, $0.gast), $0) }, uniquingKeysWith: { first, _ in first })
+        let enrichmentsByKey = Dictionary(llmMatchEnrichments.map { (normalizedTeamKey($0.heim, $0.gast), $0) }, uniquingKeysWith: { first, _ in first })
         let targetSpieltag = upcomingMatches.first?.spieltag
-        let historyForMatchday = tipHistory.filter { $0.spieltag == targetSpieltag }
+        let seasonValue = season.trimmingCharacters(in: .whitespacesAndNewlines)
+        let historyForMatchday = tipHistory.filter {
+            $0.spieltag == targetSpieltag && String(Self.currentBundesligaSeason(for: $0.timestamp)) == seasonValue
+        }
 
         return upcomingMatches.map { match in
             let homeStats = teamPerformance(for: match.heim)

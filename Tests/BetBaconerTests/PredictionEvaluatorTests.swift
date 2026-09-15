@@ -1,8 +1,10 @@
-#if canImport(XCTest)
-import XCTest
+import Foundation
+import Testing
 @testable import BetBaconer
 
-final class PredictionEvaluatorTests: XCTestCase {
+final class PredictionEvaluatorTests {
+
+    @Test
     func testEvaluateRunsUsesOnlyLatestRunPerMatchdayForLearning() {
         let oldRun = predictionRun(createdAt: Date(timeIntervalSince1970: 1), homeGoals: 1, awayGoals: 0)
         let newRun = predictionRun(createdAt: Date(timeIntervalSince1970: 2), homeGoals: 2, awayGoals: 1)
@@ -74,4 +76,3 @@ final class PredictionEvaluatorTests: XCTestCase {
         )
     }
 }
-#endif
