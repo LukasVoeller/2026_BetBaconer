@@ -28,9 +28,16 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
     private(set) var cachedOdds: [BettingOdds] = []
     private(set) var cachedOddsLog: String = ""
 
-    override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+    /// Kicktipp origin; tests point it at a local scheme handler that serves Kicktipp-like pages.
+    let baseURL: URL
+
+    init(baseURL: URL = URL(string: "https://www.kicktipp.de")!, configuration: WKWebViewConfiguration? = nil) {
+        let configuration = configuration ?? {
+            let live = WKWebViewConfiguration()
+            live.websiteDataStore = .default()
+            return live
+        }()
+        self.baseURL = baseURL
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self
@@ -70,7 +77,7 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
     }
 
     func openLogin() {
-        webView.load(URLRequest(url: URL(string: "https://www.kicktipp.de/info/profil/login")!))
+        webView.load(URLRequest(url: baseURL.appendingPathComponent("info/profil/login")))
     }
 
     func loadTippabgabe(for competitionSlug: String, spieltag: Int? = nil) throws {
@@ -83,13 +90,13 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
         cachedOdds = []
         cachedOddsLog = ""
         let query = spieltag.map { "?spieltagIndex=\($0)" } ?? ""
-        webView.load(URLRequest(url: URL(string: "https://www.kicktipp.de/\(trimmed)/tippabgabe\(query)")!))
+        webView.load(URLRequest(url: URL(string: "\(baseURL.absoluteString)/\(trimmed)/tippabgabe\(query)")!))
     }
 
     func loadCommunityOverview(for competitionSlug: String, spieltag: Int) throws {
         let trimmed = competitionSlug.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil,
-              let url = KicktippCommunityService.overviewURL(slug: trimmed, spieltag: spieltag) else {
+              let url = KicktippCommunityService.overviewURL(base: baseURL, slug: trimmed, spieltag: spieltag) else {
             throw KicktippAutomationError.invalidCompetitionSlug
         }
         webView.load(URLRequest(url: url))

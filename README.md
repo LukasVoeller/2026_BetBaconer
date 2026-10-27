@@ -134,6 +134,8 @@ swift test
 swift run
 ```
 
+Die Tests laufen ohne Netz und ohne echte Nutzerdaten. `WorkflowEndToEndTests` spielt den kompletten Ablauf durch: gestubbte OpenLigaDB, ein Fake-Codex-Skript, ein Kicktipp-Nachbau in einem echten WKWebView. Der Test deckt Tipps generieren, eintragen, pruefen und absenden ab. GitHub Actions fuehrt Build und Tests bei jedem Push aus.
+
 ## Lokale Daten
 
 Speicherort:

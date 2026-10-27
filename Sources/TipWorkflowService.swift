@@ -160,11 +160,11 @@ struct TipWorkflowService {
             }
             if let enrichment = enrichmentByMatch[matchKey] {
                 blocks.append("""
-  LLM-Zusatzdaten: Spielerimpact: \(enrichment.playerImpact)
-  LLM-Zusatzdaten: Schiedsrichter/Spielstil: \(enrichment.refereeStats)
-  LLM-Zusatzdaten: Sharp/Quotencheck: \(enrichment.sharpOdds)
-  LLM-Zusatzdaten: Lineup/Kurzfristiges: \(enrichment.lineup)
-  LLM-Datenqualitaet: \(enrichment.dataQuality) | Confidence \(String(format: "%.0f%%", enrichment.confidence * 100))
+  LLM-Zusatzdaten: Spielerimpact: \(promptSafe(enrichment.playerImpact))
+  LLM-Zusatzdaten: Schiedsrichter/Spielstil: \(promptSafe(enrichment.refereeStats))
+  LLM-Zusatzdaten: Sharp/Quotencheck: \(promptSafe(enrichment.sharpOdds))
+  LLM-Zusatzdaten: Lineup/Kurzfristiges: \(promptSafe(enrichment.lineup))
+  LLM-Datenqualitaet: \(promptSafe(enrichment.dataQuality)) | Confidence \(String(format: "%.0f%%", enrichment.confidence * 100))
 """)
             }
             return blocks.joined(separator: "\n")
@@ -722,7 +722,7 @@ OUTPUT:
             let suspensions = absences.filter { $0.type.lowercased().contains("sperre") }
             let injuries = absences.filter { !$0.type.lowercased().contains("sperre") }
             let highlighted = absences.prefix(4).map {
-                "\($0.playerName) (\($0.type)\($0.reason.isEmpty ? "" : ": \($0.reason)"))"
+                "\(promptSafe($0.playerName, maxLength: 40)) (\(promptSafe($0.type, maxLength: 30))\($0.reason.isEmpty ? "" : ": \(promptSafe($0.reason, maxLength: 60))"))"
             }.joined(separator: ", ")
             let displayTeam = absences.first?.teamName ?? team
             return "- \(displayTeam): \(absences.count) Ausfaelle, davon \(injuries.count) Verletzung(en), \(suspensions.count) Sperre(n). Wichtigste Eintraege: \(highlighted)"
@@ -985,6 +985,18 @@ private struct TipPayload: Decodable {
         case toreGast = "tore_gast"
         case rationale
     }
+}
+
+/// Third-party text (SofaScore, web research) is data, never instructions: single line, no markup, bounded length.
+func promptSafe(_ text: String, maxLength: Int = 240) -> String {
+    let flattened = text.unicodeScalars
+        .map { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) ? " " : String($0) }
+        .joined()
+        .replacingOccurrences(of: "<", with: "(")
+        .replacingOccurrences(of: ">", with: ")")
+        .split(separator: " ", omittingEmptySubsequences: true)
+        .joined(separator: " ")
+    return String(flattened.prefix(maxLength))
 }
 
 private func clampedClosingLineUpdate(_ update: LLMClosingLineUpdate) -> LLMClosingLineUpdate {

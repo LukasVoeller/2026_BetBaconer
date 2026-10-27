@@ -2,6 +2,16 @@ import AppKit
 import Foundation
 import Observation
 
+/// External collaborators of `AppState`; tests swap them for stubs and temporary locations.
+struct AppDependencies {
+    var defaults: UserDefaults = .standard
+    var session: URLSession = NetworkSessionFactory.makeDefaultSession()
+    var predictionStore = PredictionStore()
+    var tipHistoryStore = TipHistoryStore()
+    var secretStore = KeychainSecretStore()
+    var environment: [String: String] = ProcessInfo.processInfo.environment
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -27,17 +37,18 @@ final class AppState {
     // MARK: - State
 
     var season: String = String(AppState.currentBundesligaSeason())
-    var codexRunCount: Int = {
-        let stored = UserDefaults.standard.integer(forKey: Keys.codexRunCount)
-        return stored == 0 ? 1 : stored
-    }() {
-        didSet {
-            codexRunCount = min(max(codexRunCount, 1), 9)
-            UserDefaults.standard.set(codexRunCount, forKey: Keys.codexRunCount)
+    // Persisted settings: loaded from `defaults` in init, written back on change.
+    /// Number of Codex runs per analysis, always 1...9. (Re-assigning inside didSet recurses under @Observable.)
+    var codexRunCount: Int {
+        get { storedCodexRunCount }
+        set {
+            storedCodexRunCount = min(max(newValue, 1), 9)
+            defaults.set(storedCodexRunCount, forKey: Keys.codexRunCount)
         }
     }
-    var kicktippCompetitionSlug: String = UserDefaults.standard.string(forKey: Keys.kicktippCompetitionSlug) ?? "" {
-        didSet { UserDefaults.standard.set(kicktippCompetitionSlug, forKey: Keys.kicktippCompetitionSlug) }
+    private var storedCodexRunCount = 1
+    var kicktippCompetitionSlug: String = "" {
+        didSet { defaults.set(kicktippCompetitionSlug, forKey: Keys.kicktippCompetitionSlug) }
     }
     var theOddsAPIKey: String = "" {
         didSet {
@@ -53,31 +64,30 @@ final class AppState {
             }
         }
     }
-    var codexPath: String = UserDefaults.standard.string(forKey: Keys.codexPath) ?? "/opt/homebrew/bin/codex" {
-        didSet { UserDefaults.standard.set(codexPath, forKey: Keys.codexPath) }
+    var codexPath: String = "/opt/homebrew/bin/codex" {
+        didSet { defaults.set(codexPath, forKey: Keys.codexPath) }
     }
-    var kicktippRules: KicktippRules = UserDefaults.standard.data(forKey: Keys.kicktippRules)
-        .flatMap { try? JSONDecoder().decode(KicktippRules.self, from: $0) } ?? .standard {
-        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(kicktippRules), forKey: Keys.kicktippRules) }
+    var kicktippRules: KicktippRules = .standard {
+        didSet { defaults.set(try? JSONEncoder().encode(kicktippRules), forKey: Keys.kicktippRules) }
     }
     /// Own player name in the Kicktipp group, used to locate the ranking position.
-    var kicktippPlayerName: String = UserDefaults.standard.string(forKey: Keys.kicktippPlayerName) ?? "" {
-        didSet { UserDefaults.standard.set(kicktippPlayerName, forKey: Keys.kicktippPlayerName) }
+    var kicktippPlayerName: String = "" {
+        didSet { defaults.set(kicktippPlayerName, forKey: Keys.kicktippPlayerName) }
     }
-    var useRankingStrategy: Bool = UserDefaults.standard.bool(forKey: Keys.useRankingStrategy) {
-        didSet { UserDefaults.standard.set(useRankingStrategy, forKey: Keys.useRankingStrategy) }
+    var useRankingStrategy: Bool = false {
+        didSet { defaults.set(useRankingStrategy, forKey: Keys.useRankingStrategy) }
     }
     /// Share of the bookmaker market in expected goals; learned from the odds archive by the backtest.
-    var learnedMarketWeight: Double = (UserDefaults.standard.object(forKey: Keys.learnedMarketWeight) as? Double) ?? ModelBacktestService.defaultMarketWeight {
-        didSet { UserDefaults.standard.set(learnedMarketWeight, forKey: Keys.learnedMarketWeight) }
+    var learnedMarketWeight: Double = ModelBacktestService.defaultMarketWeight {
+        didSet { defaults.set(learnedMarketWeight, forKey: Keys.learnedMarketWeight) }
     }
     var backtestReport = ""
     /// Recompute tips about an hour before kickoff with the latest (most accurate) odds.
-    var autoRefreshBeforeKickoff: Bool = UserDefaults.standard.bool(forKey: Keys.autoRefreshBeforeKickoff) {
-        didSet { UserDefaults.standard.set(autoRefreshBeforeKickoff, forKey: Keys.autoRefreshBeforeKickoff) }
+    var autoRefreshBeforeKickoff: Bool = false {
+        didSet { defaults.set(autoRefreshBeforeKickoff, forKey: Keys.autoRefreshBeforeKickoff) }
     }
-    var autoSubmitAfterRefresh: Bool = UserDefaults.standard.bool(forKey: Keys.autoSubmitAfterRefresh) {
-        didSet { UserDefaults.standard.set(autoSubmitAfterRefresh, forKey: Keys.autoSubmitAfterRefresh) }
+    var autoSubmitAfterRefresh: Bool = false {
+        didSet { defaults.set(autoSubmitAfterRefresh, forKey: Keys.autoSubmitAfterRefresh) }
     }
     var lastKickoffRefresh: [String: Date] = [:]
     var generatedPrompt: String = ""
@@ -156,17 +166,19 @@ final class AppState {
     var errorMessage: String?
     var infoMessage: String?
 
-    let kicktippAutomation = KicktippAutomation()
+    let kicktippAutomation: KicktippAutomation
 
     // MARK: - Services
 
-    let ligaService = OpenLigaDBService()
+    let defaults: UserDefaults
+    let session: URLSession
+    let ligaService: OpenLigaDBService
     let tipWorkflowService = TipWorkflowService()
-    let sofaScoreService = SofaScoreService()
-    let teamMetadataService = TheSportsDBService()
-    let weatherService = WeatherService()
+    let sofaScoreService: SofaScoreService
+    let teamMetadataService: TheSportsDBService
+    let weatherService: WeatherService
     let teamRatingService = TeamRatingService()
-    let predictionStore = PredictionStore()
+    let predictionStore: PredictionStore
     let predictionEvaluator = PredictionEvaluator()
     let communityService = KicktippCommunityService()
     var ensembleService: EnsembleService {
@@ -182,11 +194,11 @@ final class AppState {
         return service
     }
     let codexRunner = CodexRunner()
-    let secretStore = KeychainSecretStore()
-    let tipHistoryStore = TipHistoryStore()
+    let secretStore: KeychainSecretStore
+    let tipHistoryStore: TipHistoryStore
 
     var oddsAPIService: TheOddsAPIService {
-        TheOddsAPIService(apiKey: theOddsAPIKey)
+        TheOddsAPIService(apiKey: theOddsAPIKey, session: session)
     }
 
     // MARK: - Init
@@ -321,13 +333,35 @@ final class AppState {
         }
     }
 
-    init() {
+    init(dependencies: AppDependencies = AppDependencies(), kicktippAutomation: KicktippAutomation = KicktippAutomation()) {
+        defaults = dependencies.defaults
+        session = dependencies.session
+        ligaService = OpenLigaDBService(session: dependencies.session)
+        sofaScoreService = SofaScoreService(session: dependencies.session)
+        teamMetadataService = TheSportsDBService(session: dependencies.session)
+        weatherService = WeatherService(session: dependencies.session)
+        predictionStore = dependencies.predictionStore
+        tipHistoryStore = dependencies.tipHistoryStore
+        secretStore = dependencies.secretStore
+        self.kicktippAutomation = kicktippAutomation
+
+        let storedRunCount = defaults.integer(forKey: Keys.codexRunCount)
+        storedCodexRunCount = min(max(storedRunCount == 0 ? 1 : storedRunCount, 1), 9)
+        kicktippCompetitionSlug = defaults.string(forKey: Keys.kicktippCompetitionSlug) ?? ""
+        codexPath = defaults.string(forKey: Keys.codexPath) ?? "/opt/homebrew/bin/codex"
+        kicktippRules = defaults.data(forKey: Keys.kicktippRules)
+            .flatMap { try? JSONDecoder().decode(KicktippRules.self, from: $0) } ?? .standard
+        kicktippPlayerName = defaults.string(forKey: Keys.kicktippPlayerName) ?? ""
+        useRankingStrategy = defaults.bool(forKey: Keys.useRankingStrategy)
+        learnedMarketWeight = (defaults.object(forKey: Keys.learnedMarketWeight) as? Double) ?? ModelBacktestService.defaultMarketWeight
+        autoRefreshBeforeKickoff = defaults.bool(forKey: Keys.autoRefreshBeforeKickoff)
+        autoSubmitAfterRefresh = defaults.bool(forKey: Keys.autoSubmitAfterRefresh)
+
+        let environmentKey = dependencies.environment["THE_ODDS_API_KEY"]
         do {
-            theOddsAPIKey = try secretStore.loadSecret(account: SecretKeys.theOddsAPIKey)
-                ?? ProcessInfo.processInfo.environment["THE_ODDS_API_KEY"]
-                ?? ""
+            theOddsAPIKey = try secretStore.loadSecret(account: SecretKeys.theOddsAPIKey) ?? environmentKey ?? ""
         } catch {
-            theOddsAPIKey = ProcessInfo.processInfo.environment["THE_ODDS_API_KEY"] ?? ""
+            theOddsAPIKey = environmentKey ?? ""
             errorMessage = error.localizedDescription
         }
 

@@ -35,14 +35,24 @@ final class CodexRunner {
         activeProcess = handle
         defer { activeProcess = nil }
 
-        return try await service.run(
+        // One serial consumer keeps the console in output order (separate Tasks per chunk may reorder).
+        let (chunks, continuation) = AsyncStream<String>.makeStream()
+        let consumer = Task { @MainActor in
+            for await chunk in chunks { onChunk(chunk) }
+        }
+        defer { continuation.finish() }
+
+        let result = try await service.run(
             executablePath: executablePath,
             arguments: arguments,
             standardInput: standardInput,
             timeout: timeout,
             handle: handle
         ) { chunk in
-            Task { @MainActor in onChunk(chunk) }
+            continuation.yield(chunk)
         }
+        continuation.finish()
+        await consumer.value
+        return result
     }
 }

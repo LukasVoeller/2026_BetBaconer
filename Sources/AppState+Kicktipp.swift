@@ -187,6 +187,9 @@ extension AppState {
 
         // Phase 2: wait for loading to FINISH with the correct URL
         while kicktippAutomation.isPageLoading || kicktippAutomation.webView.url?.absoluteString.contains(marker) != true {
+            if !kicktippAutomation.isPageLoading, kicktippAutomation.webView.url?.path.contains("/login") == true {
+                throw KicktippAutomationError.javaScriptError("Nicht bei Kicktipp angemeldet. Bitte im Kicktipp-Tab einloggen und erneut versuchen.")
+            }
             if DispatchTime.now().uptimeNanoseconds - start > timeoutNanoseconds {
                 throw KicktippAutomationError.javaScriptError("Kicktipp-Tippabgabe konnte nicht rechtzeitig geladen werden.")
             }

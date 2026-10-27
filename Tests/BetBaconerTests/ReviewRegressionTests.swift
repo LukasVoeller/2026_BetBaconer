@@ -196,3 +196,20 @@ final class ReviewRegressionTests {
         }
     }
 }
+
+extension ReviewRegressionTests {
+    @MainActor
+    @Test
+    func testCodexRunnerDeliversOutputInOrder() async throws {
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("order-\(UUID().uuidString).sh")
+        try "#!/bin/sh\nfor i in $(seq 1 200); do echo \"line $i\"; done\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        var received = ""
+        _ = try await CodexRunner().run(executablePath: script.path, arguments: [], standardInput: nil, timeout: 30) { received += $0 }
+
+        let numbers = received.split(separator: "\n").compactMap { Int($0.split(separator: " ").last ?? "") }
+        XCTAssertEqual(numbers, Array(1...200))
+    }
+}

@@ -56,6 +56,9 @@ NavigationSplitView
 - Fehler werden als roter Banner im Status-Strip angezeigt; bei `noBettingFieldsFound` wird automatisch DOM-Debug-Info in die Console geloggt
 - `KicktippAutomation` ist `@Observable` (NSObject-Subklasse) damit `isPageLoading` SwiftUI-reaktiv ist
 - Die App wird als SPM-Executable gebaut (`Package.swift`); `NSApp.activate(ignoringOtherApps: true)` im AppDelegate ist notwendig damit Keyboard-Input funktioniert; SIGPIPE wird ignoriert (Codex-stdin)
+- Abhängigkeiten (UserDefaults, URLSession, Stores, Keychain, Kicktipp-Basis-URL/WebView-Konfiguration) werden über `AppDependencies` bzw. `KicktippAutomation(baseURL:configuration:)` injiziert; Tests nutzen nie echte Nutzerdaten
+- Unter `@Observable` keine Property im eigenen `didSet` neu zuweisen (Endlosrekursion); stattdessen eigener Setter
+- Drittanbieter-Text im Prompt immer über `promptSafe(_:)` bzw. `sanitizedPlayerName(_:)`
 - Teamnamen immer über `normalizedTeamKey` / `matchesLikelyEqual` vergleichen, nie per String-Gleichheit
 - Änderungen an der Tipp-Auswahl erhöhen `AppState.promptVersion`
 - Modelländerungen nur mit Backtest-Beleg (`Learning > Backtest ausführen`)

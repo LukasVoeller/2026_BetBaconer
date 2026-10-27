@@ -104,8 +104,8 @@ struct KicktippCommunityService {
     })();
     """#
 
-    static func overviewURL(slug: String, spieltag: Int) -> URL? {
-        URL(string: "https://www.kicktipp.de/\(slug)/tippuebersicht?spieltagIndex=\(spieltag)")
+    static func overviewURL(base: URL, slug: String, spieltag: Int) -> URL? {
+        URL(string: "\(base.absoluteString)/\(slug)/tippuebersicht?spieltagIndex=\(spieltag)")
     }
 
     // MARK: Parsing
