@@ -13,14 +13,30 @@ enum KeychainSecretStoreError: LocalizedError {
 }
 
 struct KeychainSecretStore {
-    private let service: String
+    /// Service name used while the app ran unbundled (`swift run`); secrets saved there are migrated once.
+    static let legacyService = "BetBaconer"
 
-    init(service: String = Bundle.main.bundleIdentifier ?? "BetBaconer") {
+    private let service: String
+    private let migrateFrom: String?
+
+    init(service: String = Bundle.main.bundleIdentifier ?? KeychainSecretStore.legacyService, migrateFrom: String? = KeychainSecretStore.legacyService) {
         self.service = service
+        self.migrateFrom = migrateFrom == service ? nil : migrateFrom
     }
 
     func loadSecret(account: String) throws -> String? {
-        var query = baseQuery(account: account)
+        if let value = try loadSecret(account: account, service: service) {
+            return value
+        }
+        guard let migrateFrom, let legacy = try loadSecret(account: account, service: migrateFrom) else {
+            return nil
+        }
+        try saveSecret(legacy, account: account)
+        return legacy
+    }
+
+    private func loadSecret(account: String, service: String) throws -> String? {
+        var query = baseQuery(account: account, service: service)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -65,10 +81,10 @@ struct KeychainSecretStore {
         }
     }
 
-    private func baseQuery(account: String) -> [String: Any] {
+    private func baseQuery(account: String, service: String? = nil) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: service ?? self.service,
             kSecAttrAccount as String: account,
         ]
     }

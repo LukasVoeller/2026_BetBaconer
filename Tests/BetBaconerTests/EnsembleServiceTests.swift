@@ -5,7 +5,20 @@ import Testing
 final class EnsembleServiceTests {
 
     @Test
-    func testAggregateTipsUsesPoissonModalScoreline() throws {
+    func testStandardKicktippRulesGiveGoalDifferenceForWrongDrawScore() {
+        var rules = KicktippRules.standard
+        XCTAssertEqual(rules.points(predictedHome: 2, predictedAway: 1, actualHome: 2, actualAway: 1), 4)
+        XCTAssertEqual(rules.points(predictedHome: 2, predictedAway: 1, actualHome: 3, actualAway: 2), 3)
+        XCTAssertEqual(rules.points(predictedHome: 2, predictedAway: 1, actualHome: 4, actualAway: 0), 2)
+        XCTAssertEqual(rules.points(predictedHome: 1, predictedAway: 1, actualHome: 2, actualAway: 2), 3)
+        XCTAssertEqual(rules.points(predictedHome: 1, predictedAway: 0, actualHome: 0, actualAway: 1), 0)
+
+        rules.drawCountsAsGoalDifference = false
+        XCTAssertEqual(rules.points(predictedHome: 1, predictedAway: 1, actualHome: 2, actualAway: 2), 2)
+    }
+
+    @Test
+    func testSymmetricMatchBreaksExpectedPointsTieTowardsHome() throws {
         let service = EnsembleService()
         let upcomingMatches = [
             UpcomingMatch(spieltag: 26, datum: "2025-03-14T19:30:00Z", heim: "Team A", gast: "Team B")
@@ -19,9 +32,9 @@ final class EnsembleServiceTests {
         ]
 
         let aggregated = try service.aggregateTips(from: runs, upcomingMatches: upcomingMatches, bettingOdds: [])
+        let tip = try XCTUnwrap(aggregated.first)
 
-        XCTAssertEqual(aggregated.first?.toreHeim, 1)
-        XCTAssertEqual(aggregated.first?.toreGast, 1)
+        XCTAssertGreaterThan(tip.toreHeim, tip.toreGast)
     }
 
     @Test
@@ -43,8 +56,9 @@ final class EnsembleServiceTests {
             expectedGoals: [normalizedTeamKey("Team A", "Team B"): xg]
         )
 
+        // Statistical xG dominates; the 3:0 runs only shift it by the LLM signal weight.
         XCTAssertEqual(aggregated.first?.toreHeim, 1)
-        XCTAssertEqual(aggregated.first?.toreGast, 1)
+        XCTAssertEqual(aggregated.first?.toreGast, 0)
     }
 
     @Test
@@ -72,7 +86,7 @@ final class EnsembleServiceTests {
             UpcomingMatch(spieltag: 26, datum: "2025-03-14T19:30:00Z", heim: "Team A", gast: "Team B")
         ]
         let runs = [
-            [SuggestedTip(spieltag: 26, heim: "Team A", gast: "Team B", toreHeim: 1, toreGast: 0, rationale: "A")]
+            [SuggestedTip(spieltag: 26, heim: "Team A", gast: "Team B", toreHeim: 0, toreGast: 0, rationale: "A")]
         ]
         let xg = MatchExpectedGoals(heim: "Team A", gast: "Team B", home: 0.9, away: 0.9)
 
@@ -88,32 +102,27 @@ final class EnsembleServiceTests {
     }
 
     @Test
-    func testAggregateTipsDampensBlowoutWhenMarketIsClose() throws {
-        let service = EnsembleService()
-        let upcomingMatches = [
-            UpcomingMatch(spieltag: 4, datum: "2026-09-19T13:30:00Z", heim: "Hamburger SV", gast: "1. FC Köln")
-        ]
-        let runs = [
-            [SuggestedTip(spieltag: 4, heim: "Hamburger SV", gast: "1. FC Köln", toreHeim: 0, toreGast: 4, rationale: "A")]
-        ]
-        let odds = [
-            BettingOdds(heim: "Hamburger SV", gast: "1. FC Köln", quoteHeim: "2.65", quoteUnentschieden: "3.60", quoteGast: "2.45")
-        ]
-        let xg = MatchExpectedGoals(heim: "Hamburger SV", gast: "1. FC Köln", home: 0.35, away: 3.8)
+    func testCloseMarketPreventsBlowoutEvenWhenRatingsDisagree() throws {
+        // Ratings say Köln wins big, the market says the match is even: the market decides (backtest result).
+        let upcoming = [UpcomingMatch(spieltag: 4, datum: "2026-09-19T13:30:00Z", heim: "Hamburger SV", gast: "1. FC Köln")]
+        let history = (0..<20).map { index in
+            FinishedMatch(spieltag: index + 1, datum: String(format: "2026-0%d-%02dT13:30:00Z", 3 + index / 10, 1 + index % 10 * 2),
+                          heim: index.isMultiple(of: 2) ? "Hamburger SV" : "1. FC Köln", gast: index.isMultiple(of: 2) ? "1. FC Köln" : "Hamburger SV",
+                          toreHeim: index.isMultiple(of: 2) ? 0 : 5, toreGast: index.isMultiple(of: 2) ? 5 : 0)
+        }
+        let odds = [BettingOdds(heim: "Hamburger SV", gast: "1. FC Köln", quoteHeim: "2.65", quoteUnentschieden: "3.60", quoteGast: "2.45")]
+        let expectedGoals = ExpectedGoalsModel().expectedGoals(ExpectedGoalsInput(season: 2026, finishedResults: history, upcomingMatches: upcoming, bettingOdds: odds))
+        let runs = [[SuggestedTip(spieltag: 4, heim: "Hamburger SV", gast: "1. FC Köln", toreHeim: 0, toreGast: 4, rationale: "A")]]
 
-        let aggregated = try service.aggregateTips(
-            from: runs,
-            upcomingMatches: upcomingMatches,
-            bettingOdds: odds,
-            expectedGoals: [normalizedTeamKey("Hamburger SV", "1. FC Köln"): xg]
-        )
+        let tips = try EnsembleService().aggregateTips(from: runs, upcomingMatches: upcoming, bettingOdds: odds, expectedGoals: expectedGoals)
+        let tip = try XCTUnwrap(tips.first)
 
-        XCTAssertLessThanOrEqual(aggregated[0].toreGast - aggregated[0].toreHeim, 2)
-        XCTAssertLessThanOrEqual(aggregated[0].toreHeim + aggregated[0].toreGast, 4)
+        XCTAssertLessThanOrEqual(abs(tip.toreGast - tip.toreHeim), 1)
+        XCTAssertLessThanOrEqual(tip.toreHeim + tip.toreGast, 3)
     }
 
     @Test
-    func testAggregateTipsCapsMatchdayDraws() throws {
+    func testClearHomeFavoritesAreNotTippedAsDraws() throws {
         let service = EnsembleService()
         let upcomingMatches = (1...9).map {
             UpcomingMatch(spieltag: 4, datum: "2026-09-19T13:30:00Z", heim: "Home \($0)", gast: "Away \($0)")
@@ -133,9 +142,32 @@ final class EnsembleServiceTests {
             )
         }
 
-        let aggregated = try service.aggregateTips(from: runs, upcomingMatches: upcomingMatches, bettingOdds: odds)
-        let drawCount = aggregated.filter { $0.toreHeim == $0.toreGast }.count
+        let expectedGoals = Dictionary(uniqueKeysWithValues: upcomingMatches.prefix(4).map {
+            (normalizedTeamKey($0.heim, $0.gast), MatchExpectedGoals(heim: $0.heim, gast: $0.gast, home: 1.7, away: 1.0))
+        })
+        let aggregated = try service.aggregateTips(from: runs, upcomingMatches: upcomingMatches, bettingOdds: odds, expectedGoals: expectedGoals)
 
-        XCTAssertLessThanOrEqual(drawCount, 3)
+        for tip in aggregated.prefix(4) {
+            XCTAssertGreaterThan(tip.toreHeim, tip.toreGast)
+        }
+    }
+
+    @Test
+    func testProbabilityModelStoresOutcomeProbabilitiesAndTopScorelines() {
+        let service = EnsembleService()
+        let match = UpcomingMatch(spieltag: 4, datum: "2026-09-19T13:30:00Z", heim: "Team A", gast: "Team B")
+
+        let model = service.probabilityModel(
+            for: match,
+            homeExpectedGoals: 1.6,
+            awayExpectedGoals: 1.1,
+            drawCalibration: 0.05,
+            odds: BettingOdds(heim: "Team A", gast: "Team B", quoteHeim: "1.90", quoteUnentschieden: "3.60", quoteGast: "4.20")
+        )
+
+        XCTAssertEqual(model.topScorelines.count, 3)
+        XCTAssertEqual(model.probabilityHomeWin + model.probabilityDraw + model.probabilityAwayWin, 1, accuracy: 0.0001)
+        XCTAssertGreaterThanOrEqual(model.confidence, 0)
+        XCTAssertLessThanOrEqual(model.confidence, 1)
     }
 }

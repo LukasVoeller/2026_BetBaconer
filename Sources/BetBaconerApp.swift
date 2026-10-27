@@ -3,6 +3,8 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Writing a prompt to a Codex process that already exited must fail with EPIPE, not kill the app.
+        signal(SIGPIPE, SIG_IGN)
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         if let url = Bundle.module.url(forResource: "logo", withExtension: "png"),

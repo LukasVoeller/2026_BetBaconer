@@ -5,6 +5,14 @@ func XCTAssertEqual<T: Equatable>(_ left: @autoclosure () -> T, _ right: @autocl
     #expect(left() == right())
 }
 
+func XCTAssertEqual(_ left: @autoclosure () -> Double, _ right: @autoclosure () -> Double, accuracy: Double) {
+    #expect(abs(left() - right()) <= accuracy)
+}
+
+func XCTAssertGreaterThanOrEqual<T: Comparable>(_ left: @autoclosure () -> T, _ right: @autoclosure () -> T) {
+    #expect(left() >= right())
+}
+
 func XCTAssertTrue(_ value: @autoclosure () -> Bool) {
     #expect(value())
 }

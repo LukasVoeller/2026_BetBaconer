@@ -1,6 +1,6 @@
 import Foundation
 
-public struct FinishedMatch: Codable, Identifiable, Hashable {
+public struct FinishedMatch: Codable, Identifiable, Hashable, Sendable {
     public let spieltag: Int
     public let datum: String
     public let heim: String
@@ -20,7 +20,7 @@ public struct FinishedMatch: Codable, Identifiable, Hashable {
     public var id: String { "\(spieltag)-\(datum)-\(heim)-\(gast)" }
 }
 
-struct UpcomingMatch: Codable, Identifiable, Hashable {
+struct UpcomingMatch: Codable, Identifiable, Hashable, Sendable {
     let spieltag: Int
     let datum: String
     let heim: String
@@ -29,7 +29,7 @@ struct UpcomingMatch: Codable, Identifiable, Hashable {
     var id: String { "\(spieltag)-\(datum)-\(heim)-\(gast)" }
 }
 
-public struct SuggestedTip: Codable, Identifiable, Hashable {
+public struct SuggestedTip: Codable, Identifiable, Hashable, Sendable {
     public let spieltag: Int
     public let heim: String
     public let gast: String
@@ -49,14 +49,14 @@ public struct SuggestedTip: Codable, Identifiable, Hashable {
     public var id: String { "\(spieltag)-\(heim)-\(gast)" }
 }
 
-struct SeasonQuestionTip: Codable, Identifiable, Hashable {
+struct SeasonQuestionTip: Codable, Identifiable, Hashable, Sendable {
     let question: String
     let answers: [String]
 
     var id: String { question }
 }
 
-public struct BettingOdds: Codable, Identifiable, Hashable {
+public struct BettingOdds: Codable, Identifiable, Hashable, Sendable {
     public let heim: String
     public let gast: String
     public let quoteHeim: String
@@ -74,7 +74,7 @@ public struct BettingOdds: Codable, Identifiable, Hashable {
     public var id: String { "\(heim)-\(gast)" }
 }
 
-struct TeamMetadata: Codable, Identifiable, Hashable {
+struct TeamMetadata: Codable, Identifiable, Hashable, Sendable {
     let teamName: String
     let teamShortName: String
     let stadiumName: String
@@ -84,7 +84,7 @@ struct TeamMetadata: Codable, Identifiable, Hashable {
     var id: String { teamName }
 }
 
-struct MatchWeather: Codable, Identifiable, Hashable {
+struct MatchWeather: Codable, Identifiable, Hashable, Sendable {
     let heim: String
     let gast: String
     let locationName: String
@@ -98,7 +98,7 @@ struct MatchWeather: Codable, Identifiable, Hashable {
     var id: String { "\(heim)-\(gast)-\(kickoff)" }
 }
 
-struct KicktippMatchField: Codable, Identifiable, Hashable {
+struct KicktippMatchField: Codable, Identifiable, Hashable, Sendable {
     let heim: String
     let gast: String
     let heimField: String
@@ -109,7 +109,7 @@ struct KicktippMatchField: Codable, Identifiable, Hashable {
     var id: String { "\(heim)-\(gast)-\(heimField)-\(gastField)" }
 }
 
-struct OverUnderOdds: Codable, Identifiable, Hashable {
+struct OverUnderOdds: Codable, Identifiable, Hashable, Sendable {
     let heim: String
     let gast: String
     let line: Double          // typisch 2.5
@@ -118,7 +118,7 @@ struct OverUnderOdds: Codable, Identifiable, Hashable {
     var id: String { "\(heim)-\(gast)" }
 }
 
-struct BTTSOdds: Codable, Identifiable, Hashable {
+struct BTTSOdds: Codable, Identifiable, Hashable, Sendable {
     let heim: String
     let gast: String
     let yesQuote: String
@@ -126,7 +126,7 @@ struct BTTSOdds: Codable, Identifiable, Hashable {
     var id: String { "\(heim)-\(gast)" }
 }
 
-struct HandicapOdds: Codable, Identifiable, Hashable {
+struct HandicapOdds: Codable, Identifiable, Hashable, Sendable {
     let heim: String
     let gast: String
     let homeHandicap: Double  // z. B. -0.5
@@ -136,7 +136,26 @@ struct HandicapOdds: Codable, Identifiable, Hashable {
     var id: String { "\(heim)-\(gast)" }
 }
 
-struct MatchExpectedGoals: Hashable {
+/// Bookmaker odds captured for a match (Kicktipp or The Odds API), kept to backtest the market weight.
+struct ArchivedOdds: Codable, Hashable, Sendable {
+    let season: String
+    let spieltag: Int
+    let heim: String
+    let gast: String
+    let quoteHeim: String
+    let quoteUnentschieden: String
+    let quoteGast: String
+    let overUnderLine: Double?
+    let overQuote: String?
+    let underQuote: String?
+    let capturedAt: Date
+
+    var bettingOdds: BettingOdds {
+        BettingOdds(heim: heim, gast: gast, quoteHeim: quoteHeim, quoteUnentschieden: quoteUnentschieden, quoteGast: quoteGast)
+    }
+}
+
+struct MatchExpectedGoals: Hashable, Sendable {
     let heim: String
     let gast: String
     let home: Double
@@ -154,7 +173,7 @@ struct MatchExpectedGoals: Hashable {
     }
 }
 
-struct LLMMatchEnrichment: Codable, Identifiable, Hashable {
+struct LLMMatchEnrichment: Codable, Identifiable, Hashable, Sendable {
     let heim: String
     let gast: String
     let playerImpact: String
@@ -305,7 +324,7 @@ struct LLMMatchEnrichment: Codable, Identifiable, Hashable {
     }
 }
 
-struct PlayerAbsence: Identifiable, Hashable {
+struct PlayerAbsence: Identifiable, Hashable, Sendable {
     let playerName: String
     let teamName: String
     let type: String
@@ -314,7 +333,7 @@ struct PlayerAbsence: Identifiable, Hashable {
     var id: String { "\(teamName)-\(playerName)-\(type)-\(reason)" }
 }
 
-struct LLMClosingLineUpdate: Codable, Hashable {
+struct LLMClosingLineUpdate: Codable, Hashable, Sendable {
     let spieltag: Int
     let heim: String
     let gast: String
@@ -329,32 +348,7 @@ struct LLMClosingLineUpdate: Codable, Hashable {
     }
 }
 
-struct MatchReferee: Identifiable, Hashable {
-    let heim: String
-    let gast: String
-    let referee: String
-    var id: String { "\(heim)-\(gast)" }
-}
-
-struct TeamExtraFixture: Identifiable, Hashable {
-    let teamName: String
-    let competition: String   // "Champions League", "Europa League", "DFB-Pokal" etc.
-    let opponent: String
-    let date: String          // ISO8601
-    let isHome: Bool
-    var id: String { "\(teamName)-\(competition)-\(date)" }
-}
-
-struct TeamSeasonShots: Identifiable, Hashable {
-    let teamName: String
-    let shotsOnGoalPerGameHome: Double
-    let shotsOnGoalPerGameAway: Double
-    let shotsOnGoalConversionHome: Double  // goals / shots on goal (home)
-    let shotsOnGoalConversionAway: Double  // goals / shots on goal (away)
-    var id: String { teamName }
-}
-
-struct TipGenerationRecord: Codable, Identifiable {
+struct TipGenerationRecord: Codable, Identifiable, Sendable {
     var id: UUID
     let timestamp: Date
     let spieltag: Int

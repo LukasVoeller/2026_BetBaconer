@@ -1,5 +1,6 @@
 import Foundation
-import OSLog
+// os.Logger is thread-safe; older SDKs just lack the Sendable annotation.
+@preconcurrency import OSLog
 
 enum AppLogger {
     private static let subsystem = Bundle.main.bundleIdentifier ?? "BetBaconer"

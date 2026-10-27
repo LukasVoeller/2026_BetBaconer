@@ -3,6 +3,8 @@ import Foundation
 enum TipWorkflowError: LocalizedError {
     case invalidModelOutput
     case fixtureMismatch
+    case duplicateMatches
+    case invalidScore(String)
 
     var errorDescription: String? {
         switch self {
@@ -10,6 +12,10 @@ enum TipWorkflowError: LocalizedError {
             return "Die eingefuegte Antwort enthaelt kein valides JSON mit Tipps."
         case .fixtureMismatch:
             return "Die eingefuegte Antwort passt nicht zu den offenen Spielen."
+        case .duplicateMatches:
+            return "Die Antwort enthaelt mindestens ein Spiel mehrfach."
+        case let .invalidScore(match):
+            return "Ungueltiges Ergebnis fuer \(match) (erlaubt: 0 bis 15 Tore)."
         }
     }
 }
@@ -26,12 +32,10 @@ struct TipWorkflowService {
         playerAbsences: [PlayerAbsence] = [],
         teamMetadata: [TeamMetadata] = [],
         matchWeather: [MatchWeather] = [],
-        matchReferees: [MatchReferee] = [],
-        teamExtraFixtures: [TeamExtraFixture] = [],
-        teamShotsStats: [TeamSeasonShots] = [],
         llmMatchEnrichments: [LLMMatchEnrichment] = [],
         tipHistory: [TipGenerationRecord] = [],
-        learningState: LearningState? = nil
+        learningState: LearningState? = nil,
+        communitySummary: String? = nil
     ) -> String {
         let standings = buildStandings(from: finishedResults)
         let restDaysByTeam = buildRestDaysByTeam(finishedResults: finishedResults, upcomingMatches: upcomingMatches)
@@ -41,44 +45,30 @@ struct TipWorkflowService {
 
         // --- Lookup maps ---
         let normalizedOddsMap = Dictionary(
-            uniqueKeysWithValues: bettingOdds.map {
-                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
-            }
+            bettingOdds.map { (normalizedTeamKey($0.heim, $0.gast), $0) },
+            uniquingKeysWith: { first, _ in first }
         )
         let normalizedOUMap = Dictionary(
-            uniqueKeysWithValues: overUnderOdds.map {
-                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
-            }
+            overUnderOdds.map { (normalizedTeamKey($0.heim, $0.gast), $0) },
+            uniquingKeysWith: { first, _ in first }
         )
         let normalizedBTTSMap = Dictionary(
-            uniqueKeysWithValues: bttsOdds.map {
-                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
-            }
+            bttsOdds.map { (normalizedTeamKey($0.heim, $0.gast), $0) },
+            uniquingKeysWith: { first, _ in first }
         )
         let normalizedHandicapMap = Dictionary(
-            uniqueKeysWithValues: handicapOdds.map {
-                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
-            }
-        )
-        let normalizedRefereeMap = Dictionary(
-            uniqueKeysWithValues: matchReferees.map {
-                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0.referee)
-            }
+            handicapOdds.map { (normalizedTeamKey($0.heim, $0.gast), $0) },
+            uniquingKeysWith: { first, _ in first }
         )
         let enrichmentByMatch = Dictionary(
-            uniqueKeysWithValues: llmMatchEnrichments.map {
-                ("\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))", $0)
-            }
-        )
-        let extraFixturesByTeam = Dictionary(grouping: teamExtraFixtures) { normalizeTeamName($0.teamName) }
-        let shotsByTeam = Dictionary(
-            uniqueKeysWithValues: teamShotsStats.map { (normalizeTeamName($0.teamName), $0) }
+            llmMatchEnrichments.map { (normalizedTeamKey($0.heim, $0.gast), $0) },
+            uniquingKeysWith: { first, _ in first }
         )
 
         // --- Kompakte Teamprofile (nur Teams im naechsten Spieltag) ---
         let teamsInFocus = Set(upcomingMatches.flatMap { [$0.heim, $0.gast] })
         let teamStatsSection = teamsInFocus.sorted()
-            .map { teamProfile(team: $0, results: finishedResults, standings: standings, restDaysByTeam: restDaysByTeam, metadata: metadataByTeam[normalizeTeamName($0)], shotsStats: shotsByTeam[normalizeTeamName($0)]) }
+            .map { teamProfile(team: $0, results: finishedResults, standings: standings, restDaysByTeam: restDaysByTeam, metadata: metadataByTeam[normalizeTeamName($0)]) }
             .joined(separator: "\n")
 
         // --- Spielplan mit Tabellenkontext, Resttagen, H2H und Quoten ---
@@ -168,35 +158,14 @@ struct TipWorkflowService {
                 let awaySign = hcp.awayHandicap >= 0 ? "+" : ""
                 blocks.append("  Handicap: \(m.heim) (\(homeSign)\(hcp.homeHandicap)) \(hcp.homeQuote) / \(m.gast) (\(awaySign)\(hcp.awayHandicap)) \(hcp.awayQuote)")
             }
-            // Schiedsrichter
-            if let referee = normalizedRefereeMap[matchKey] {
-                blocks.append("  Schiedsrichter: \(referee)")
-            }
             if let enrichment = enrichmentByMatch[matchKey] {
                 blocks.append("""
-  LLM-Zusatzdaten: Spielerimpact: \(enrichment.playerImpact)
-  LLM-Zusatzdaten: Schiedsrichter/Spielstil: \(enrichment.refereeStats)
-  LLM-Zusatzdaten: Sharp/Quotencheck: \(enrichment.sharpOdds)
-  LLM-Zusatzdaten: Lineup/Kurzfristiges: \(enrichment.lineup)
-  LLM-Datenqualitaet: \(enrichment.dataQuality) | Confidence \(String(format: "%.0f%%", enrichment.confidence * 100))
+  LLM-Zusatzdaten: Spielerimpact: \(promptSafe(enrichment.playerImpact))
+  LLM-Zusatzdaten: Schiedsrichter/Spielstil: \(promptSafe(enrichment.refereeStats))
+  LLM-Zusatzdaten: Sharp/Quotencheck: \(promptSafe(enrichment.sharpOdds))
+  LLM-Zusatzdaten: Lineup/Kurzfristiges: \(promptSafe(enrichment.lineup))
+  LLM-Datenqualitaet: \(promptSafe(enrichment.dataQuality)) | Confidence \(String(format: "%.0f%%", enrichment.confidence * 100))
 """)
-            }
-            // Europaeische/Pokal-Belastung
-            let homeExtraKey = normalizeTeamName(m.heim)
-            let awayExtraKey = normalizeTeamName(m.gast)
-            let homeExtras = extraFixturesByTeam[homeExtraKey] ?? []
-            let awayExtras = extraFixturesByTeam[awayExtraKey] ?? []
-            if !homeExtras.isEmpty {
-                for extra in homeExtras {
-                    let homeAway = extra.isHome ? "Heim" : "Auswaerts"
-                    blocks.append("  Zusatzbelastung \(m.heim): \(extra.competition) vs. \(extra.opponent) (\(homeAway))")
-                }
-            }
-            if !awayExtras.isEmpty {
-                for extra in awayExtras {
-                    let homeAway = extra.isHome ? "Heim" : "Auswaerts"
-                    blocks.append("  Zusatzbelastung \(m.gast): \(extra.competition) vs. \(extra.opponent) (\(homeAway))")
-                }
             }
             return blocks.joined(separator: "\n")
         }.joined(separator: "\n\n")
@@ -246,6 +215,7 @@ Bisherige KI-Vorhersagen fuer diesen Spieltag (\(relevantHistory.count) Laeufe) 
         }
 
         let learningSection = learningState?.promptSummary(minSampleSize: 30) ?? ""
+        let communitySection = communitySummary.map { "\n\n\($0)" } ?? ""
 
         return """
 Du bist ein Fussball-Prognose-Modell. Analysiere die Bundesliga-Saison \(season) und prognostiziere die Ergebnisse des naechsten Spieltags. Arbeite intern Schritt fuer Schritt, gib nach aussen aber ausschliesslich das JSON-Objekt aus.
@@ -316,7 +286,7 @@ TEAMSTATISTIKEN (Saison \(season), gewichtet nach Aktualitaet):
 \(teamStatsSection)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 NAECHSTER SPIELTAG:
-\(upcomingLines)\(absenceSection)\(historySection)\(learningSection)
+\(upcomingLines)\(absenceSection)\(historySection)\(learningSection)\(communitySection)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT-ANFORDERUNGEN:
 - Exakt ein JSON-Objekt mit dem Feld "tips", kein anderer Text, keine Markdown-Formatierung.
@@ -546,9 +516,7 @@ OUTPUT:
             throw TipWorkflowError.invalidModelOutput
         }
 
-        let expected = Set(upcomingMatches.map { "\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))" })
-        let actual = Set(payload.map { "\(normalizeTeamName($0.heim))|\(normalizeTeamName($0.gast))" })
-        guard expected == actual else { throw TipWorkflowError.fixtureMismatch }
+        try validateFixtures(payload.map { normalizedTeamKey($0.heim, $0.gast) }, upcomingMatches: upcomingMatches)
 
         return payload.map {
             LLMMatchEnrichment(
@@ -601,24 +569,31 @@ OUTPUT:
             throw TipWorkflowError.invalidModelOutput
         }
 
-        let tips = payload.map {
-            SuggestedTip(
-                spieltag: $0.spieltag,
-                heim: $0.heim,
-                gast: $0.gast,
-                toreHeim: $0.toreHeim,
-                toreGast: $0.toreGast,
-                rationale: $0.rationale
+        try validateFixtures(payload.map { normalizedTeamKey($0.heim, $0.gast) }, upcomingMatches: upcomingMatches)
+        let matchesByKey = Dictionary(upcomingMatches.map { (normalizedTeamKey($0.heim, $0.gast), $0) }, uniquingKeysWith: { first, _ in first })
+
+        return try payload.map { tip in
+            guard (0...15).contains(tip.toreHeim), (0...15).contains(tip.toreGast) else {
+                throw TipWorkflowError.invalidScore("\(tip.heim) vs. \(tip.gast)")
+            }
+            // Canonical names and matchday come from OpenLigaDB, not from the model output.
+            let match = matchesByKey[normalizedTeamKey(tip.heim, tip.gast)]
+            return SuggestedTip(
+                spieltag: match?.spieltag ?? tip.spieltag,
+                heim: match?.heim ?? tip.heim,
+                gast: match?.gast ?? tip.gast,
+                toreHeim: tip.toreHeim,
+                toreGast: tip.toreGast,
+                rationale: tip.rationale
             )
         }
+    }
 
-        let expected = Set(upcomingMatches.map { "\($0.heim)|\($0.gast)" })
-        let actual = Set(tips.map { "\($0.heim)|\($0.gast)" })
-        guard expected == actual else {
+    private func validateFixtures(_ keys: [String], upcomingMatches: [UpcomingMatch]) throws {
+        guard Set(keys).count == keys.count else { throw TipWorkflowError.duplicateMatches }
+        guard Set(keys) == Set(upcomingMatches.map { normalizedTeamKey($0.heim, $0.gast) }) else {
             throw TipWorkflowError.fixtureMismatch
         }
-
-        return tips
     }
 
     func parseClosingLineUpdates(from content: String) throws -> [LLMClosingLineUpdate] {
@@ -637,7 +612,7 @@ OUTPUT:
 
     // MARK: - Private helpers
 
-    private func teamProfile(team: String, results: [FinishedMatch], standings: [String: TeamStanding], restDaysByTeam: [String: Int], metadata: TeamMetadata?, shotsStats: TeamSeasonShots? = nil) -> String {
+    private func teamProfile(team: String, results: [FinishedMatch], standings: [String: TeamStanding], restDaysByTeam: [String: Int], metadata: TeamMetadata?) -> String {
         let all = results
             .filter { $0.heim == team || $0.gast == team }
             .sorted { $0.spieltag > $1.spieltag }
@@ -717,9 +692,7 @@ OUTPUT:
   Gewichtete Kernwerte: Pkt/Sp \(f(avgPts)) | Tore/Sp \(f(avgGF)) | Gegentore/Sp \(f(avgGA)) | Tor-Diff/Sp \(f(avgGD))
   Heim (\(home.count) Sp.): Form \(homeForm.isEmpty ? "–" : homeForm) | Tore \(f(hGF)) | Gegentore \(f(hGA)) | Pkt/Sp \(f(hPts))
   Auswaerts (\(away.count) Sp.): Form \(awayForm.isEmpty ? "–" : awayForm) | Tore \(f(aGF)) | Gegentore \(f(aGA)) | Pkt/Sp \(f(aPts))
-\(restText)\(shotsStats.map { s in
-    "\n  Schuesse aufs Tor/Sp.: \(String(format: "%.1f", s.shotsOnGoalPerGameHome)) (Heim) | \(String(format: "%.1f", s.shotsOnGoalPerGameAway)) (Auswaerts) | Verwertung: \(String(format: "%.1f%%", s.shotsOnGoalConversionHome * 100)) (H) \(String(format: "%.1f%%", s.shotsOnGoalConversionAway * 100)) (A)"
-} ?? "")
+\(restText)
 """
     }
 
@@ -749,7 +722,7 @@ OUTPUT:
             let suspensions = absences.filter { $0.type.lowercased().contains("sperre") }
             let injuries = absences.filter { !$0.type.lowercased().contains("sperre") }
             let highlighted = absences.prefix(4).map {
-                "\($0.playerName) (\($0.type)\($0.reason.isEmpty ? "" : ": \($0.reason)"))"
+                "\(promptSafe($0.playerName, maxLength: 40)) (\(promptSafe($0.type, maxLength: 30))\($0.reason.isEmpty ? "" : ": \(promptSafe($0.reason, maxLength: 60))"))"
             }.joined(separator: ", ")
             let displayTeam = absences.first?.teamName ?? team
             return "- \(displayTeam): \(absences.count) Ausfaelle, davon \(injuries.count) Verletzung(en), \(suspensions.count) Sperre(n). Wichtigste Eintraege: \(highlighted)"
@@ -907,7 +880,7 @@ FORMTABELLE LETZTE \(allSpieldags.count) SPIELTAGE:
     }
 
     private func parseDate(_ raw: String) -> Date? {
-        iso8601WithFractional.date(from: raw) ?? iso8601.date(from: raw)
+        parseKickoffDate(raw)
     }
 
     private func bundesligaSeason(for date: Date) -> Int {
@@ -941,18 +914,6 @@ FORMTABELLE LETZTE \(allSpieldags.count) SPIELTAGE:
         let code = weather.weatherCode.map(String.init) ?? "n/a"
         return "\(weather.locationName) | Temp \(temperature) | Niederschlag \(precipitation) (\(precipitationProbability)) | Wind \(wind) | Code \(code)"
     }
-
-    private let iso8601: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
-    private let iso8601WithFractional: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
 }
 
 private struct TeamStanding {
@@ -1024,6 +985,18 @@ private struct TipPayload: Decodable {
         case toreGast = "tore_gast"
         case rationale
     }
+}
+
+/// Third-party text (SofaScore, web research) is data, never instructions: single line, no markup, bounded length.
+func promptSafe(_ text: String, maxLength: Int = 240) -> String {
+    let flattened = text.unicodeScalars
+        .map { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) ? " " : String($0) }
+        .joined()
+        .replacingOccurrences(of: "<", with: "(")
+        .replacingOccurrences(of: ">", with: ")")
+        .split(separator: " ", omittingEmptySubsequences: true)
+        .joined(separator: " ")
+    return String(flattened.prefix(maxLength))
 }
 
 private func clampedClosingLineUpdate(_ update: LLMClosingLineUpdate) -> LLMClosingLineUpdate {

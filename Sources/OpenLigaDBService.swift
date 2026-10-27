@@ -32,7 +32,7 @@ struct OpenLigaDBService {
         let finishedResults = finishedMatches(from: matches)
         let upcomingMatches = upcomingMatches(from: matches)
 
-        guard let nextSpieltag = upcomingMatches.map(\.spieltag).min() else {
+        guard let nextSpieltag = Self.nextMatchday(finished: finishedResults, upcoming: upcomingMatches) else {
             throw OpenLigaDBError.noOpenMatchday
         }
 
@@ -54,6 +54,14 @@ struct OpenLigaDBService {
         return finishedMatches(from: matches)
     }
 
+    /// Picks the matchday to tip. Rescheduled games (Nachholspiele) of earlier matchdays are skipped:
+    /// a matchday below the latest matchday with a finished game is considered a postponed leftover.
+    static func nextMatchday(finished: [FinishedMatch], upcoming: [UpcomingMatch]) -> Int? {
+        let latestPlayed = finished.map(\.spieltag).max() ?? 0
+        let regular = upcoming.map(\.spieltag).filter { $0 >= latestPlayed }
+        return regular.min() ?? upcoming.map(\.spieltag).min()
+    }
+
     private func decodeMatches(from data: Data) throws -> [OpenLigaMatch] {
         try JSONDecoder().decode([OpenLigaMatch].self, from: data)
     }
@@ -67,7 +75,7 @@ struct OpenLigaDBService {
 
             return FinishedMatch(
                 spieltag: match.group.groupOrderID,
-                datum: match.matchDateTime,
+                datum: match.matchDateTimeUTC,
                 heim: match.team1.teamName,
                 gast: match.team2.teamName,
                 toreHeim: result.pointsTeam1,
@@ -84,7 +92,7 @@ struct OpenLigaDBService {
             guard !match.matchIsFinished else { return nil }
             return UpcomingMatch(
                 spieltag: match.group.groupOrderID,
-                datum: match.matchDateTime,
+                datum: match.matchDateTimeUTC,
                 heim: match.team1.teamName,
                 gast: match.team2.teamName
             )
@@ -94,7 +102,7 @@ struct OpenLigaDBService {
 
 private struct OpenLigaMatch: Decodable {
     let matchIsFinished: Bool
-    let matchDateTime: String
+    let matchDateTimeUTC: String
     let group: MatchGroup
     let team1: Team
     let team2: Team

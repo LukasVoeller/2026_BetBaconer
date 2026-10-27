@@ -17,14 +17,8 @@ public struct PredictionEvaluator {
         var evaluatedMatchCount = 0
         let learningRunIDs = latestRunIDsByMatchday(from: runs)
 
+        // Every run is evaluated (so single Codex runs stay comparable), but only one run per matchday feeds learning.
         for run in runs {
-            guard learningRunIDs.contains(run.id) else {
-                let matches = run.matches.map { $0.clearingEvaluation() }
-                if matches != run.matches { updatedRunCount += 1 }
-                updatedRuns.append(run.replacingMatches(matches))
-                continue
-            }
-
             guard let finishedMatches = finishedMatchesBySeason[run.seasonIdentifier] else {
                 updatedRuns.append(run)
                 continue
@@ -33,6 +27,8 @@ public struct PredictionEvaluator {
             let evaluatedMatches = evaluateMatches(run.matches, against: finishedMatches)
             if evaluatedMatches != run.matches {
                 updatedRunCount += 1
+            }
+            if learningRunIDs.contains(run.id) {
                 evaluatedMatchCount += zip(run.matches, evaluatedMatches).filter { !$0.0.isEvaluated && $0.1.isEvaluated }.count
             }
 
@@ -76,53 +72,18 @@ public struct PredictionEvaluator {
         let absErrorHomeGoals = abs(prediction.predictedHomeGoals - finishedMatch.toreHeim)
         let absErrorAwayGoals = abs(prediction.predictedAwayGoals - finishedMatch.toreGast)
 
-        return MatchPrediction(
-            id: prediction.id,
-            runId: prediction.runId,
-            spieltag: prediction.spieltag,
-            heim: prediction.heim,
-            gast: prediction.gast,
-            kickoffAt: prediction.kickoffAt,
-            predictedHomeGoals: prediction.predictedHomeGoals,
-            predictedAwayGoals: prediction.predictedAwayGoals,
-            predictedOutcome: prediction.predictedOutcome,
-            rationale: prediction.rationale,
-            quoteHome: prediction.quoteHome,
-            quoteDraw: prediction.quoteDraw,
-            quoteAway: prediction.quoteAway,
-            homeFormLast5: prediction.homeFormLast5,
-            awayFormLast5: prediction.awayFormLast5,
-            homeGoalsPerGame: prediction.homeGoalsPerGame,
-            awayGoalsPerGame: prediction.awayGoalsPerGame,
-            homeConcededPerGame: prediction.homeConcededPerGame,
-            awayConcededPerGame: prediction.awayConcededPerGame,
-            injuriesHomeCount: prediction.injuriesHomeCount,
-            injuriesAwayCount: prediction.injuriesAwayCount,
-            keyAbsenceHome: prediction.keyAbsenceHome,
-            keyAbsenceAway: prediction.keyAbsenceAway,
-            consistencySignalSummary: prediction.consistencySignalSummary,
-            llmLineup: prediction.llmLineup,
-            llmPlayerValue: prediction.llmPlayerValue,
-            llmSharpOdds: prediction.llmSharpOdds,
-            llmClosingLine: prediction.llmClosingLine,
-            llmHistoricalBaseline: prediction.llmHistoricalBaseline,
-            llmScorelineCalibration: prediction.llmScorelineCalibration,
-            dataQuality: prediction.dataQuality,
-            expectedHomeGoals: prediction.expectedHomeGoals,
-            expectedAwayGoals: prediction.expectedAwayGoals,
-            marketWeightHint: prediction.marketWeightHint,
-            evaluatedClosingLineValue: prediction.evaluatedClosingLineValue,
-            actualHomeGoals: finishedMatch.toreHeim,
-            actualAwayGoals: finishedMatch.toreGast,
-            actualOutcome: actualOutcome,
-            exactHit: exactHit,
-            tendencyHit: tendencyHit,
-            goalDiffHit: goalDiffHit,
-            absErrorHomeGoals: absErrorHomeGoals,
-            absErrorAwayGoals: absErrorAwayGoals,
-            totalAbsGoalError: absErrorHomeGoals + absErrorAwayGoals,
-            evaluatedAt: evaluatedAt
-        )
+        var evaluated = prediction
+        evaluated.actualHomeGoals = finishedMatch.toreHeim
+        evaluated.actualAwayGoals = finishedMatch.toreGast
+        evaluated.actualOutcome = actualOutcome
+        evaluated.exactHit = exactHit
+        evaluated.tendencyHit = tendencyHit
+        evaluated.goalDiffHit = goalDiffHit
+        evaluated.absErrorHomeGoals = absErrorHomeGoals
+        evaluated.absErrorAwayGoals = absErrorAwayGoals
+        evaluated.totalAbsGoalError = absErrorHomeGoals + absErrorAwayGoals
+        evaluated.evaluatedAt = evaluatedAt
+        return evaluated
     }
 
     private func finishedMatchKey(_ match: FinishedMatch) -> String {
@@ -133,9 +94,11 @@ public struct PredictionEvaluator {
         "\(prediction.spieltag)|\(normalizedTeamKey(prediction.heim, prediction.gast))"
     }
 
+    /// Learns from what was actually tipped: the Kicktipp form state beats the ensemble, which beats single Codex runs.
+    /// Within the same source the newest run wins.
     private func latestRunIDsByMatchday(from runs: [PredictionRun]) -> Set<UUID> {
         let latest = Dictionary(grouping: runs) { "\($0.seasonIdentifier)|\($0.spieltag)" }
-            .compactMap { _, runs in runs.max { $0.createdAt < $1.createdAt }?.id }
+            .compactMap { _, runs in runs.max(by: PredictionRun.learningOrder)?.id }
         return Set(latest)
     }
 
@@ -173,19 +136,3 @@ private extension PredictionRun {
     }
 }
 
-private extension MatchPrediction {
-    func clearingEvaluation() -> MatchPrediction {
-        var prediction = self
-        prediction.actualHomeGoals = nil
-        prediction.actualAwayGoals = nil
-        prediction.actualOutcome = nil
-        prediction.exactHit = nil
-        prediction.tendencyHit = nil
-        prediction.goalDiffHit = nil
-        prediction.absErrorHomeGoals = nil
-        prediction.absErrorAwayGoals = nil
-        prediction.totalAbsGoalError = nil
-        prediction.evaluatedAt = nil
-        return prediction
-    }
-}
