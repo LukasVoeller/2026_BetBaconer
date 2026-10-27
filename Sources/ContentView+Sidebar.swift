@@ -16,7 +16,7 @@ extension ContentView {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    var sidebarHeader: some View {
+    private var sidebarHeader: some View {
         VStack(alignment: .center, spacing: 2) {
             if let url = Bundle.module.url(forResource: "logo", withExtension: "png"),
                let logo = NSImage(contentsOf: url) {
@@ -39,7 +39,7 @@ extension ContentView {
         .padding(.bottom, 8)
     }
 
-    var kicktippCard: some View {
+    private var kicktippCard: some View {
         card(title: "Kicktipp", icon: "soccer.field") {
             VStack(alignment: .leading, spacing: 8) {
                 LazyVGrid(columns: actionGridColumns, alignment: .leading, spacing: 8) {
@@ -108,7 +108,7 @@ extension ContentView {
         }
     }
 
-    var workflowCard: some View {
+    private var workflowCard: some View {
         card(title: "Bundesliga", icon: "wand.and.stars") {
             VStack(alignment: .leading, spacing: 10) {
                 LazyVGrid(columns: actionGridColumns, alignment: .leading, spacing: 8) {
@@ -155,7 +155,7 @@ extension ContentView {
         }
     }
 
-    var learningCard: some View {
+    private var learningCard: some View {
         card(title: "Self-Learning", icon: "brain.head.profile") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("\(state.learningState.sampleSize) bewertete Tipps")

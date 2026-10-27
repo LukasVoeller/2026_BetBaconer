@@ -29,7 +29,7 @@ extension AppState {
         }
     }
 
-    func readKicktippMatches() async {
+    private func readKicktippMatches() async {
         await perform {
             let fields = try await self.kicktippAutomation.extractMatchFields()
             self.kicktippMatchFields = fields

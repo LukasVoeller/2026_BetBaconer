@@ -131,8 +131,9 @@ final class WorkflowEndToEndTests {
                 session: URLSession(configuration: sessionConfiguration),
                 predictionStore: PredictionStore(fileURL: directory.appendingPathComponent("learning-store.json"), legacyHistoryURL: directory.appendingPathComponent("none.json")),
                 tipHistoryStore: TipHistoryStore(fileURL: directory.appendingPathComponent("tip-history.json")),
-                secretStore: KeychainSecretStore(service: "BetBaconerTests.\(UUID().uuidString)"),
-                environment: [:]
+                secretStore: KeychainSecretStore(service: "BetBaconerTests.\(UUID().uuidString)", migrateFrom: nil),
+                environment: [:],
+                legacyDefaultsDomain: nil
             ),
             kicktippAutomation: automation
         )

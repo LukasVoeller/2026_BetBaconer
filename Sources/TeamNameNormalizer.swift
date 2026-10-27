@@ -28,8 +28,8 @@ private let teamAliases: [String: String] = {
         "schalke04": ["fcschalke04", "schalke04", "schalke", "s04"],
         "darmstadt98": ["svdarmstadt98", "darmstadt98", "darmstadt", "d98"],
         "herthabsc": ["herthabsc", "herthaberlin", "hertha", "bsc"],
-        "bielefeld": ["arminiabielefeld", "bielefeld", "dsc"],
-        "greutherfurth": ["spvggreutherfurth", "greutherfurth", "furth", "sgf"],
+        "bielefeld": ["dscarminiabielefeld", "arminiabielefeld", "bielefeld", "dsc"],
+        "greutherfurth": ["spvgggreutherfurth", "greutherfurth", "furth", "sgf"],
         "paderborn07": ["scpaderborn07", "paderborn07", "paderborn", "scp"],
     ]
     var aliases: [String: String] = [:]

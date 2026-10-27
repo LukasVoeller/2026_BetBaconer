@@ -55,15 +55,24 @@ Die finale Scoreline kommt nicht direkt von Codex.
 
 Codex liefert Analyse, Begruendung und eine eigene Scoreline. Der Mittelwert der Codex-Scorelines fliesst mit 20 % in das statistische xG ein; die finale Scoreline berechnet die App deterministisch.
 
-Finalmodell (Parameter per Walk-forward-Backtest ueber die Saisons 2020-2025 gewaehlt):
+Finalmodell (jede Entscheidung per Walk-forward-Backtest belegt, Bundesliga 2019-2025):
 
-1. **Team-Rating:** zeitgewichtetes Poisson-Attack/Defense-Modell ueber die laufende und zwei Vorsaisons (Halbwertszeit 365 Tage, L2-Regularisierung, Aufsteiger starten unter Liganiveau, Tor-Kalibrierung gegen systematische Unterschaetzung).
-2. **Markt:** Aus H2H-Quoten (und O/U, falls vorhanden) werden die erwarteten Tore direkt geloest und geometrisch mit dem Rating gemischt. Marktgewicht Standard 80 %, gelernt per Backtest aus dem Quoten-Archiv, sobald mindestens 45 archivierte Spiele vorliegen. Ohne Quoten wirken stattdessen Ausfaelle und Resttage.
-3. **Codex:** Mittelwert der Codex-Scorelines mit 20 %, LLM-Zusatzdaten klein und confidence-gewichtet.
-4. **Auswahl:** Dixon-Coles-Scoreline-Matrix bis `6:6`; gewaehlt wird die Scoreline mit den meisten erwarteten Kicktipp-Punkten (Punkteregel der Tipprunde, bei Gleichstand die heimstaerkere).
-5. Gespeichert werden 1/X/2-Wahrscheinlichkeiten, Top-3-Scorelines und ein heuristischer Sicherheitswert.
+1. **Markt zuerst:** Liegen Quoten vor, bestimmen sie allein die erwarteten Tore (Marktgewicht 100 %, gelernt). Die Tendenz kommt aus den 1X2-Quoten, das Torniveau aus O/U-Quoten, sonst aus dem Team-Rating.
+2. **Team-Rating als Fallback:** zeitgewichtetes Poisson-Modell ueber die laufende und zwei Vorsaisons (L2, Aufsteiger-Malus, Tor-Kalibrierung). Es greift, wenn fuer ein Spiel keine Quoten vorliegen; dann wirken auch Ausfaelle, Resttage, LLM-News und Learning-Korrekturen.
+3. **Auswahl:** Dixon-Coles-Scoreline-Matrix; gewaehlt wird das Ergebnis mit den meisten erwarteten Kicktipp-Punkten (Punkteregel der Tipprunde).
+4. Gespeichert werden 1/X/2-Wahrscheinlichkeiten, Top-3-Ergebnisse und ein heuristischer Sicherheitswert.
 
-Backtest-Stand (nur Statistik, ohne Quoten, 1.836 Spiele): 1,28 Punkte/Tipp, Faustregel „Favorit 2:1“ 1,29. Ohne Marktdaten ist kein Modell signifikant besser als diese Faustregel; der Vorsprung muss aus Quoten und Kurzfrist-News kommen.
+Backtest mit Pinnacle-Schlussquoten (1.885 Spiele, Saisons 2019/20-2025/26):
+
+| Methode | Punkte/Tipp |
+|---|---|
+| **App: Markt + erwartete Kicktipp-Punkte, mit O/U** | **1,343** |
+| App, nur 1X2-Quoten (z. B. Kicktipp) | 1,331 |
+| Faustregel „Favorit 2:1“ | 1,290 |
+| Team-Rating ohne Quoten | 1,269 |
+| „Wahrscheinlichstes Ergebnis“ (fruehere App-Logik) mit denselben Quoten | 1,207 |
+
+Verworfen, weil im Backtest schlechter: Daempfung von Kantersiegen (-0,016), Torniveau aus der Remisquote (-0,014), Mischung von Markt und Rating (bis -0,08), zusaetzliche Codex-Scorelines bei vorhandenen Quoten.
 
 ## Quoten-Archiv und Backtest
 
@@ -78,7 +87,7 @@ Neue PredictionRuns speichern xG, LLM-Lineup, Spielerwert, Sharp/Closing, histor
 Beim Auswerten werden fehlende Closing-Line-Hinweise per LLM/Web-Recherche nachgezogen und als CLV-Signal gespeichert.
 Self-Learning bewertet alle Runs, lernt aber pro Spieltag nur aus einem: dem in Kicktipp eingetragenen Stand, sonst dem Ensemble, sonst dem neuesten Einzel-Lauf.
 Self-Learning zeigt Backtesting je Modellversion, sobald mindestens 5 bewertete Tipps fuer eine Version vorliegen.
-Aktuelle Modellversion im Learning-Store: `rating-market-ev-kicktipp-v7`.
+Aktuelle Modellversion im Learning-Store: `market-ev-kicktipp-v8`.
 
 ## Kurz vor Anstoss
 
@@ -124,6 +133,8 @@ Codex wird immer mit `--sandbox read-only` und einem Timeout (15 Minuten pro Lau
 Ohne The-Odds-API-Key nutzt die App Kicktipp-Quoten als Fallback. Nicht per API verfuegbare Zusatzdaten werden per LLM-Web-Recherche gesucht.
 
 ## Entwicklung
+
+Fertige App (Release, `dist/BetBaconer.app`, per Doppelklick startbar): `./scripts/build-app.sh`. Einstellungen und API-Key einer frueheren `swift run`-Installation werden beim ersten Start uebernommen.
 
 Die SwiftUI-Macros sind nur in der Xcode-Toolchain enthalten, nicht in den Command Line Tools:
 

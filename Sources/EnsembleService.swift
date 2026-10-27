@@ -207,14 +207,12 @@ struct EnsembleService {
 
     private func scorelineProbabilities(homeExpectedGoals: Double, awayExpectedGoals: Double, drawCalibration: Double, odds: BettingOdds?) -> [ScorelineProbability] {
         var matrix: [ScorelineProbability] = []
-        let market = marketShape(from: odds)
 
         for homeGoals in 0...6 {
             for awayGoals in 0...6 {
                 let probability = poissonProbability(goals: homeGoals, lambda: homeExpectedGoals)
                     * poissonProbability(goals: awayGoals, lambda: awayExpectedGoals)
                     * dixonColesAdjustment(homeGoals: homeGoals, awayGoals: awayGoals, homeExpectedGoals: homeExpectedGoals, awayExpectedGoals: awayExpectedGoals)
-                    * realismAdjustment(homeGoals: homeGoals, awayGoals: awayGoals, market: market)
                     * drawCalibrationAdjustment(homeGoals: homeGoals, awayGoals: awayGoals, drawCalibration: drawCalibration)
                 matrix.append(ScorelineProbability(homeGoals: homeGoals, awayGoals: awayGoals, probability: probability))
             }
@@ -304,39 +302,9 @@ struct EnsembleService {
         }
     }
 
-    private func realismAdjustment(homeGoals: Int, awayGoals: Int, market: MarketShape?) -> Double {
-        guard let market else { return 1 }
-        let total = homeGoals + awayGoals
-        let margin = abs(homeGoals - awayGoals)
-        var factor = 1.0
-
-        if market.favoriteWinProbability < 0.45 {
-            if margin >= 3 { factor *= 0.12 }
-            if total >= 5 { factor *= 0.20 }
-        } else if market.favoriteWinProbability < 0.60 {
-            if margin >= 4 { factor *= 0.20 }
-            if total >= 6 { factor *= 0.35 }
-        }
-
-        return factor
-    }
-
     private func drawCalibrationAdjustment(homeGoals: Int, awayGoals: Int, drawCalibration: Double) -> Double {
         guard homeGoals == awayGoals else { return 1 }
         return min(max(1 + drawCalibration, 0.80), 1.20)
-    }
-
-    private func marketShape(from odds: BettingOdds?) -> MarketShape? {
-        guard let odds,
-              let homeQuote = parseQuote(odds.quoteHeim),
-              let drawQuote = parseQuote(odds.quoteUnentschieden),
-              let awayQuote = parseQuote(odds.quoteGast),
-              homeQuote > 0, drawQuote > 0, awayQuote > 0 else {
-            return nil
-        }
-
-        let inv = 1 / homeQuote + 1 / drawQuote + 1 / awayQuote
-        return MarketShape(favoriteWinProbability: max((1 / homeQuote) / inv, (1 / awayQuote) / inv))
     }
 
     private func factorial(_ value: Int) -> Int {
@@ -367,10 +335,6 @@ struct EnsembleService {
     private func parseQuote(_ raw: String) -> Double? {
         Double(raw.replacingOccurrences(of: ",", with: "."))
     }
-}
-
-private struct MarketShape {
-    let favoriteWinProbability: Double
 }
 
 private extension Array where Element == Double {

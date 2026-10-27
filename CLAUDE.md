@@ -61,7 +61,7 @@ NavigationSplitView
 - Drittanbieter-Text im Prompt immer über `promptSafe(_:)` bzw. `sanitizedPlayerName(_:)`
 - Teamnamen immer über `normalizedTeamKey` / `matchesLikelyEqual` vergleichen, nie per String-Gleichheit
 - Änderungen an der Tipp-Auswahl erhöhen `AppState.promptVersion`
-- Modelländerungen nur mit Backtest-Beleg (`Learning > Backtest ausführen`)
+- Modelländerungen nur mit Backtest-Beleg (`Learning > Backtest ausführen`, mit importierten football-data-CSVs); aktueller Stand: Markt-EV 1,343 Punkte/Tipp vs. Faustregel 1,290
 
 ## LLM-Antwortformat
 
@@ -93,4 +93,5 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 swift build
 swift test
 swift run
+./scripts/build-app.sh   # Release-App nach dist/BetBaconer.app
 ```

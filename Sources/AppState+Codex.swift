@@ -53,7 +53,7 @@ extension AppState {
         return withoutEscapes.replacingOccurrences(of: #"\[[0-9;]*[A-Za-z]"#, with: "", options: .regularExpression)
     }
 
-    func updateDeviceAuthData(from text: String) {
+    private func updateDeviceAuthData(from text: String) {
         if codexDeviceAuthURL.isEmpty {
             codexDeviceAuthURL = firstMatch(in: text, pattern: #"https://auth\.openai\.com/codex/device"#) ?? ""
             if !codexDeviceAuthURL.isEmpty {
@@ -65,7 +65,7 @@ extension AppState {
         }
     }
 
-    func firstMatch(in text: String, pattern: String) -> String? {
+    private func firstMatch(in text: String, pattern: String) -> String? {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         guard let match = regex.firstMatch(in: text, range: range), let swiftRange = Range(match.range, in: text) else {
@@ -74,7 +74,7 @@ extension AppState {
         return String(text[swiftRange])
     }
 
-    func runCodexCommand(
+    private func runCodexCommand(
         arguments: [String],
         standardInput: String? = nil,
         timeout: TimeInterval = 15 * 60,
@@ -126,7 +126,7 @@ extension AppState {
         pasteboard.setString(generatedPrompt, forType: .string)
     }
 
-    var tipTextFormatter: TipTextFormatter {
+    private var tipTextFormatter: TipTextFormatter {
         TipTextFormatter(
             bettingOdds: bettingOdds, overUnderOdds: overUnderOdds, bttsOdds: bttsOdds, handicapOdds: handicapOdds,
             matchWeather: matchWeather, llmMatchEnrichments: llmMatchEnrichments, matchExpectedGoals: matchExpectedGoals,
@@ -142,7 +142,7 @@ extension AppState {
         copySuggestedTips(formatter: tipTextFormatter.resultText, message: "Tipp-Ergebnisse in die Zwischenablage kopiert.")
     }
 
-    func copySuggestedTips(formatter: (SuggestedTip) -> String, message: String) {
+    private func copySuggestedTips(formatter: (SuggestedTip) -> String, message: String) {
         guard !suggestedTips.isEmpty else {
             errorMessage = "Keine importierten Tipps zum Kopieren vorhanden."
             return

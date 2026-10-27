@@ -39,36 +39,40 @@ struct ExpectedGoalsModel {
             let confidence = min(max(enrichment?.confidence ?? 0, 0), 1)
             let marketWeightHint = (enrichment?.marketWeightHint ?? 0) * confidence
 
+            // Backtest (about 2,000 matches with Pinnacle closing odds): the pure market beats every blend
+            // and every extra adjustment, so with odds the market alone decides. The goal total comes from
+            // the Over/Under market, else from the rating (deriving it from the draw price scored worse).
             let overUnderTotal = overUnderByKey[matchKey].flatMap {
                 MarketModel.totalGoals(line: $0.line, overQuote: $0.overQuote, underQuote: $0.underQuote)
             }
-            if let odds = oddsByKey[matchKey], let market = MarketModel.expectedGoals(odds: odds, total: overUnderTotal) {
-                let weight = min(max(input.marketWeight + marketWeightHint, 0.3), 0.95)
+            var drawCalibration = 0.0
+            if let odds = oddsByKey[matchKey],
+               let market = MarketModel.expectedGoals(odds: odds, total: overUnderTotal ?? (rating.home + rating.away)) {
+                let weight = min(max(input.marketWeight + marketWeightHint, 0.3), 1)
                 (homeXG, awayXG) = ModelBacktestService.blend(rating: (homeXG, awayXG), market: market, marketWeight: weight)
             } else {
                 let homeAbsence = absenceImpact(absencesByTeam[normalizeTeamName(match.heim)] ?? [])
                 let awayAbsence = absenceImpact(absencesByTeam[normalizeTeamName(match.gast)] ?? [])
                 homeXG *= (1 - homeAbsence.attack) * (1 + awayAbsence.defense) * restFactor(restDays[normalizeTeamName(match.heim)])
                 awayXG *= (1 - awayAbsence.attack) * (1 + homeAbsence.defense) * restFactor(restDays[normalizeTeamName(match.gast)])
-            }
 
-            var drawCalibration = 0.0
-            if let enrichment {
-                let weight = input.llmSignalWeight * confidence * 0.5
-                homeXG *= 1 + (enrichment.homeAttackAdjustment + enrichment.awayDefenseAdjustment + enrichment.lineupImpact + enrichment.playerValueImpact) * weight
-                awayXG *= 1 + (enrichment.awayAttackAdjustment + enrichment.homeDefenseAdjustment - enrichment.lineupImpact - enrichment.playerValueImpact) * weight
-                if enrichment.totalGoalsAdjustment != 0 {
-                    let current = max(0.1, homeXG + awayXG)
-                    let factor = max(0.8, current + enrichment.totalGoalsAdjustment * weight) / current
-                    homeXG *= factor
-                    awayXG *= factor
+                // Without a market price, small confidence-weighted LLM news and learning corrections help most.
+                if let enrichment {
+                    let weight = input.llmSignalWeight * confidence * 0.5
+                    homeXG *= 1 + (enrichment.homeAttackAdjustment + enrichment.awayDefenseAdjustment + enrichment.lineupImpact + enrichment.playerValueImpact) * weight
+                    awayXG *= 1 + (enrichment.awayAttackAdjustment + enrichment.homeDefenseAdjustment - enrichment.lineupImpact - enrichment.playerValueImpact) * weight
+                    if enrichment.totalGoalsAdjustment != 0 {
+                        let current = max(0.1, homeXG + awayXG)
+                        let factor = max(0.8, current + enrichment.totalGoalsAdjustment * weight) / current
+                        homeXG *= factor
+                        awayXG *= factor
+                    }
+                    drawCalibration = enrichment.scorelineDrawCalibration * confidence
                 }
-                drawCalibration = enrichment.scorelineDrawCalibration * confidence
-            }
-
-            if input.learningState.sampleSize >= 30 {
-                homeXG -= input.learningState.avgHomeGoalOverprediction * 0.2
-                awayXG -= input.learningState.avgAwayGoalOverprediction * 0.2
+                if input.learningState.sampleSize >= 30 {
+                    homeXG -= input.learningState.avgHomeGoalOverprediction * 0.2
+                    awayXG -= input.learningState.avgAwayGoalOverprediction * 0.2
+                }
             }
 
             return (

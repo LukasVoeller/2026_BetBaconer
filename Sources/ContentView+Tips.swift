@@ -204,7 +204,7 @@ extension ContentView {
         .padding(.vertical, 8)
     }
 
-    func factorSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func factorSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.system(size: 11, weight: .bold))
@@ -217,7 +217,7 @@ extension ContentView {
         .padding(.top, 8)
     }
 
-    func tipMetricRow(_ label: String, _ value: String) -> some View {
+    private func tipMetricRow(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Text(label)
                 .font(.system(size: 11, weight: .semibold))
@@ -230,7 +230,7 @@ extension ContentView {
         }
     }
 
-    func tipWeatherText(_ w: MatchWeather) -> String {
+    private func tipWeatherText(_ w: MatchWeather) -> String {
         var parts: [String] = []
         if let t = w.temperatureCelsius { parts.append(String(format: "%.0f°C", t)) }
         if let mm = w.precipitationMillimeters, mm > 0.5 { parts.append(String(format: "%.1f mm", mm)) }
@@ -240,7 +240,7 @@ extension ContentView {
         return "\(w.locationName) – \(detail)"
     }
 
-    func absenceGroup(team: String, absences: [PlayerAbsence]) -> some View {
+    private func absenceGroup(team: String, absences: [PlayerAbsence]) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(team)
                 .font(.system(size: 11, weight: .semibold))

@@ -39,7 +39,7 @@ extension AppState {
         }
     }
 
-    func resetLearningData() {
+    private func resetLearningData() {
         predictionRuns = []
         learningState = .empty
         infoMessage = "Learning-Daten wurden zurueckgesetzt."
@@ -116,7 +116,7 @@ extension AppState {
 
     /// Fetches the latest odds, recomputes the due matches and (optionally) enters and submits them.
     /// No new Codex run: the market already prices in late news, and Codex would take too long.
-    func refreshTipsBeforeKickoff(_ due: [UpcomingMatch]) async throws {
+    private func refreshTipsBeforeKickoff(_ due: [UpcomingMatch]) async throws {
         let seasonKey = season.trimmingCharacters(in: .whitespacesAndNewlines)
         appendConsole("[Anstoss] Aktualisiere \(due.map { "\($0.heim)-\($0.gast)" }.joined(separator: ", ")) mit aktuellen Quoten.\n")
         var freshOdds: [BettingOdds] = []
@@ -209,7 +209,7 @@ extension AppState {
         oddsArchive = oddsArchive.filter { !replaced.contains("\($0.season)|\($0.spieltag)|\(normalizedTeamKey($0.heim, $0.gast))") } + snapshots
     }
 
-    func enrichEvaluatedRunsWithClosingLines(_ runs: [PredictionRun]) async -> [PredictionRun] {
+    private func enrichEvaluatedRunsWithClosingLines(_ runs: [PredictionRun]) async -> [PredictionRun] {
         let missing = runs
             .flatMap(\.matches)
             .filter { $0.isEvaluated && self.needsClosingLineUpdate($0) }
@@ -250,13 +250,13 @@ extension AppState {
         return applyClosingLineUpdates(updates, to: runs)
     }
 
-    func needsClosingLineUpdate(_ prediction: MatchPrediction) -> Bool {
+    private func needsClosingLineUpdate(_ prediction: MatchPrediction) -> Bool {
         guard prediction.evaluatedClosingLineValue == nil else { return false }
         let text = prediction.llmClosingLine?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         return text.isEmpty || text.contains("keine") || text.contains("unbekannt") || text.contains("n/a")
     }
 
-    func applyClosingLineUpdates(_ updates: [LLMClosingLineUpdate], to runs: [PredictionRun]) -> [PredictionRun] {
+    private func applyClosingLineUpdates(_ updates: [LLMClosingLineUpdate], to runs: [PredictionRun]) -> [PredictionRun] {
         let updatesByKey = Dictionary(updates.map {
             ("\($0.spieltag)|\(normalizedTeamKey($0.heim, $0.gast))", $0)
         }, uniquingKeysWith: { first, _ in first })

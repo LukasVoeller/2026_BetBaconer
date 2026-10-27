@@ -22,7 +22,7 @@ extension ContentView {
         .padding(16)
     }
 
-    var settingsCard: some View {
+    private var settingsCard: some View {
         card(title: "Einstellungen", icon: "gearshape") {
             VStack(alignment: .leading, spacing: 10) {
                 inputGroup(title: "Codex Pfad") {

@@ -34,7 +34,8 @@ struct ModelBacktestReport: Equatable {
 
 /// Walk-forward backtests: every matchday is predicted only from matches played before it.
 struct ModelBacktestService: Sendable {
-    static let defaultMarketWeight = 0.8
+    /// Learned on ~2,000 Bundesliga matches 2019-2025 with Pinnacle closing odds (100 % market was best).
+    static let defaultMarketWeight = 1.0
     static let minimumMarketMatches = 45
     static let marketWeights = stride(from: 0.0, through: 1.0, by: 0.1).map { $0 }
 
@@ -79,7 +80,7 @@ struct ModelBacktestService: Sendable {
                     ratingCount += 1
 
                     guard let odds = archive["\(season)|\(spieltag)|\(normalizedTeamKey(match.heim, match.gast))"],
-                          let market = MarketModel.expectedGoals(odds: odds.bettingOdds, total: Self.overUnderTotal(odds)) else { continue }
+                          let market = MarketModel.expectedGoals(odds: odds.bettingOdds, total: Self.overUnderTotal(odds) ?? (rating.home + rating.away)) else { continue }
                     for (index, weight) in Self.marketWeights.enumerated() {
                         let blended = Self.blend(rating: rating, market: market, marketWeight: weight)
                         let model = ensemble.probabilityModel(for: upcoming, homeExpectedGoals: blended.home, awayExpectedGoals: blended.away, drawCalibration: 0, odds: nil)

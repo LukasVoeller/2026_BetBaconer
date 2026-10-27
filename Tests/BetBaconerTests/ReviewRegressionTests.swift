@@ -213,3 +213,30 @@ extension ReviewRegressionTests {
         XCTAssertEqual(numbers, Array(1...200))
     }
 }
+
+extension ReviewRegressionTests {
+    @Test
+    func testOpenLigaAndFootballDataNamesOfFormerClubsMatch() {
+        XCTAssertEqual(normalizeTeamName("SpVgg Greuther Fürth"), normalizeTeamName("Greuther Furth"))
+        XCTAssertEqual(normalizeTeamName("DSC Arminia Bielefeld"), normalizeTeamName("Bielefeld"))
+        XCTAssertEqual(normalizeTeamName("Hertha BSC"), normalizeTeamName("Hertha"))
+        XCTAssertEqual(normalizeTeamName("SV Darmstadt 98"), normalizeTeamName("Darmstadt"))
+    }
+}
+
+extension ReviewRegressionTests {
+    @MainActor
+    @Test
+    func testLegacySettingsAreMigratedOnlyIntoEmptyDefaults() {
+        let legacy = UserDefaults(suiteName: "BBT-legacy-\(UUID().uuidString)")!
+        legacy.set("meine-runde", forKey: "kicktippCompetitionSlug")
+        let fresh = UserDefaults(suiteName: "BBT-fresh-\(UUID().uuidString)")!
+        AppState.migrateLegacySettings(from: legacy, to: fresh)
+        XCTAssertEqual(fresh.string(forKey: "kicktippCompetitionSlug"), "meine-runde")
+
+        let used = UserDefaults(suiteName: "BBT-used-\(UUID().uuidString)")!
+        used.set("andere-runde", forKey: "kicktippCompetitionSlug")
+        AppState.migrateLegacySettings(from: legacy, to: used)
+        XCTAssertEqual(used.string(forKey: "kicktippCompetitionSlug"), "andere-runde")
+    }
+}

@@ -119,7 +119,7 @@ extension ContentView {
         .padding(.vertical, 4)
     }
 
-    func historyHeaderRow() -> some View {
+    private func historyHeaderRow() -> some View {
         HStack(spacing: 0) {
             Text("")
                 .frame(maxWidth: .infinity)
@@ -142,7 +142,7 @@ extension ContentView {
         .padding(.bottom, 2)
     }
 
-    func actualResultText(for tip: SuggestedTip, in record: TipGenerationRecord) -> String {
+    private func actualResultText(for tip: SuggestedTip, in record: TipGenerationRecord) -> String {
         let recordSeason = String(AppState.currentBundesligaSeason(for: record.timestamp))
         if let prediction = state.predictionRuns
             .reversed()
@@ -177,7 +177,7 @@ extension ContentView {
         return "-"
     }
 
-    func historyOddsMap(for record: TipGenerationRecord) -> [String: BettingOdds] {
+    private func historyOddsMap(for record: TipGenerationRecord) -> [String: BettingOdds] {
         Dictionary(record.odds.map { (normalizedTeamKey($0.heim, $0.gast), $0) }, uniquingKeysWith: { first, _ in first })
     }
 }

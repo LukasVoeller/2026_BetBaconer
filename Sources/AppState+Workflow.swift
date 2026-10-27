@@ -171,11 +171,11 @@ extension AppState {
         }
     }
 
-    func clearTipHistory() {
+    private func clearTipHistory() {
         tipHistory = []
     }
 
-    func fetchLLMMatchEnrichments(seasonValue: Int) async -> [LLMMatchEnrichment] {
+    private func fetchLLMMatchEnrichments(seasonValue: Int) async -> [LLMMatchEnrichment] {
         guard !upcomingMatches.isEmpty else { return [] }
 
         let missingSignals = [
@@ -221,7 +221,7 @@ extension AppState {
         }
     }
 
-    func runPromptEnsembleWithCodex() async throws {
+    private func runPromptEnsembleWithCodex() async throws {
         let runCount = codexRunCount
         var successfulRuns: [(tips: [SuggestedTip], rawResponse: String, runIndex: Int)] = []
         var failedRuns = 0
@@ -310,7 +310,7 @@ extension AppState {
             : "Codex-Ensemble abgeschlossen (\(successfulRuns.count)/\(runCount) Laeufe)"
     }
 
-    func recordPredictionRun(
+    private func recordPredictionRun(
         tips: [SuggestedTip],
         rawPrompt: String,
         rawResponse: String,
@@ -395,7 +395,7 @@ extension AppState {
         )
     }
 
-    func buildPredictionContexts() -> [PredictionMatchContext] {
+    private func buildPredictionContexts() -> [PredictionMatchContext] {
         let oddsByKey = ensembleService.remappedOdds(bettingOdds: bettingOdds, upcomingMatches: upcomingMatches)
         let groupedAbsences = Dictionary(grouping: playerAbsences) { normalizeTeamName($0.teamName) }
         let expectedGoalsByKey = Dictionary(matchExpectedGoals.map { (normalizedTeamKey($0.heim, $0.gast), $0) }, uniquingKeysWith: { first, _ in first })
@@ -445,7 +445,7 @@ extension AppState {
         }
     }
 
-    func teamPerformance(for team: String) -> (formLast5: String, goalsPerGame: Double, concededPerGame: Double) {
+    private func teamPerformance(for team: String) -> (formLast5: String, goalsPerGame: Double, concededPerGame: Double) {
         let matches = finishedResults
             .filter { $0.heim == team || $0.gast == team }
             .sorted { ($0.spieltag, $0.datum) > ($1.spieltag, $1.datum) }
@@ -482,13 +482,13 @@ extension AppState {
         return summary
     }
 
-    func validateWorkflowInputs(upcomingMatches: [UpcomingMatch]) {
+    private func validateWorkflowInputs(upcomingMatches: [UpcomingMatch]) {
         if bettingOdds.count < upcomingMatches.count {
             appendConsole("[Quoten] Warnung: Nur \(bettingOdds.count)/\(upcomingMatches.count) Quoten verfuegbar – Workflow laeuft ohne vollstaendige Quotendaten.\n")
         }
     }
 
-    func requiredSuccessfulCodexRuns(for configuredRuns: Int) -> Int {
+    private func requiredSuccessfulCodexRuns(for configuredRuns: Int) -> Int {
         guard configuredRuns > 1 else { return 1 }
         return max(2, Int(ceil(Double(configuredRuns) * 0.6)))
     }
@@ -509,15 +509,15 @@ extension AppState {
         ))
     }
 
-    func learnedLLMSignalWeight() -> Double {
+    private func learnedLLMSignalWeight() -> Double {
         decodedLearningWeights()?.llmSignalWeight ?? 0.55
     }
 
-    func decodedLearningWeights() -> LearningCorrectionWeights? {
+    private func decodedLearningWeights() -> LearningCorrectionWeights? {
         try? JSONDecoder().decode(LearningCorrectionWeights.self, from: Data(learningState.weightsJSON.utf8))
     }
 
-    func storedOddsSnapshot(for tips: [SuggestedTip]) -> [BettingOdds] {
+    private func storedOddsSnapshot(for tips: [SuggestedTip]) -> [BettingOdds] {
         tips.compactMap { tip in
             guard let matchedOdds = bettingOdds.first(where: {
                 teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast)
@@ -548,7 +548,7 @@ extension AppState {
         appendConsole("[Learning] \(tips.count) manuelle Kicktipp-Tipps fuer Self-Learning gespeichert.\n")
     }
 
-    func hasPredictionRun(modelName: String, tips: [SuggestedTip]) -> Bool {
+    private func hasPredictionRun(modelName: String, tips: [SuggestedTip]) -> Bool {
         let expected = Dictionary(tips.map {
             (normalizedTeamKey($0.heim, $0.gast), "\($0.toreHeim):\($0.toreGast)")
         }, uniquingKeysWith: { first, _ in first })

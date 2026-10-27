@@ -10,6 +10,8 @@ struct AppDependencies {
     var tipHistoryStore = TipHistoryStore()
     var secretStore = KeychainSecretStore()
     var environment: [String: String] = ProcessInfo.processInfo.environment
+    /// Settings domain of the unbundled `swift run` binary; copied once into the app bundle's defaults.
+    var legacyDefaultsDomain: String? = Bundle.main.bundleIdentifier == nil ? nil : "BetBaconer"
 }
 
 @MainActor
@@ -161,8 +163,8 @@ final class AppState {
     /// Kicktipp fields that already hold a different tip and would be overwritten; non-empty asks the UI for confirmation.
     var pendingKicktippOverwrites: [String] = []
     /// Set when a store could not be loaded nor backed up; saving would destroy the unreadable file.
-    var tipHistoryPersistenceDisabled = false
-    var learningPersistenceDisabled = false
+    private var tipHistoryPersistenceDisabled = false
+    private var learningPersistenceDisabled = false
     var errorMessage: String?
     var infoMessage: String?
 
@@ -204,7 +206,7 @@ final class AppState {
     // MARK: - Init
 
     /// Bump whenever tip selection changes, so backtesting stays separated per model version.
-    static let promptVersion = "rating-market-ev-kicktipp-v7"
+    static let promptVersion = "market-ev-kicktipp-v8"
 
     static func currentBundesligaSeason(for date: Date = Date()) -> Int {
         let year = Calendar.current.component(.year, from: date)
@@ -345,6 +347,10 @@ final class AppState {
         secretStore = dependencies.secretStore
         self.kicktippAutomation = kicktippAutomation
 
+        if let legacyDomain = dependencies.legacyDefaultsDomain, let legacy = UserDefaults(suiteName: legacyDomain) {
+            Self.migrateLegacySettings(from: legacy, to: defaults)
+        }
+
         let storedRunCount = defaults.integer(forKey: Keys.codexRunCount)
         storedCodexRunCount = min(max(storedRunCount == 0 ? 1 : storedRunCount, 1), 9)
         kicktippCompetitionSlug = defaults.string(forKey: Keys.kicktippCompetitionSlug) ?? ""
@@ -398,7 +404,17 @@ final class AppState {
 
     // MARK: - Shared helpers
 
-    func restoreUpcomingMatchesFromLatestTips() {
+    /// Copies settings saved by the unbundled binary when the bundled app has none yet.
+    static func migrateLegacySettings(from legacy: UserDefaults, to defaults: UserDefaults) {
+        let keys = [Keys.codexRunCount, Keys.kicktippCompetitionSlug, Keys.codexPath, Keys.kicktippRules, Keys.kicktippPlayerName,
+                    Keys.useRankingStrategy, Keys.learnedMarketWeight, Keys.autoRefreshBeforeKickoff, Keys.autoSubmitAfterRefresh]
+        guard keys.allSatisfy({ defaults.object(forKey: $0) == nil }) else { return }
+        for key in keys {
+            if let value = legacy.object(forKey: key) { defaults.set(value, forKey: key) }
+        }
+    }
+
+    private func restoreUpcomingMatchesFromLatestTips() {
         guard upcomingMatches.isEmpty, let latestTips = tipHistory.last else { return }
         upcomingMatches = Self.upcomingMatchesForLatestTips(latestTips, predictionRuns: predictionRuns)
         nextSpieltag = upcomingMatches.map(\.spieltag).min()
@@ -467,7 +483,7 @@ final class AppState {
         }
     }
 
-    func persistLearningStore() {
+    private func persistLearningStore() {
         guard !learningPersistenceDisabled else { return }
         do {
             try predictionStore.save(runs: predictionRuns, learningState: learningState, community: communityMatchdays, oddsArchive: oddsArchive)
@@ -476,7 +492,7 @@ final class AppState {
         }
     }
 
-    func persistTipHistory() {
+    private func persistTipHistory() {
         guard !tipHistoryPersistenceDisabled else { return }
         do {
             try tipHistoryStore.save(tipHistory)

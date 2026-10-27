@@ -4,9 +4,9 @@ import SwiftUI
 struct ContentView: View {
     @Bindable var state: AppState
     @State var selectedTab: AppTab = .browser
-    let brandGlow = Color(red: 0.86, green: 0.92, blue: 0.21)
+    private let brandGlow = Color(red: 0.86, green: 0.92, blue: 0.21)
     let brandOrange = Color(red: 0.93, green: 0.43, blue: 0.09)
-    let brandEmber = Color(red: 0.74, green: 0.28, blue: 0.07)
+    private let brandEmber = Color(red: 0.74, green: 0.28, blue: 0.07)
     let actionGridColumns = [GridItem(.adaptive(minimum: 132), spacing: 8)]
 
     var body: some View {
@@ -59,7 +59,7 @@ struct ContentView: View {
 
     // MARK: - Tab Bar
 
-    var tabBar: some View {
+    private var tabBar: some View {
         HStack(spacing: 4) {
             tabBarButton(tab: .browser,  label: "Kicktipp",      icon: "globe")
             tabBarButton(tab: .codex,    label: "Codex",        icon: "terminal")
@@ -73,7 +73,7 @@ struct ContentView: View {
         .background(.bar)
     }
 
-    func tabBarButton(tab: AppTab, label: String, icon: String) -> some View {
+    private func tabBarButton(tab: AppTab, label: String, icon: String) -> some View {
         Button {
             selectedTab = tab
         } label: {
@@ -107,7 +107,7 @@ struct ContentView: View {
 
     // MARK: - Status Strip
 
-    var statusStrip: some View {
+    private var statusStrip: some View {
         VStack(spacing: 0) {
             if let error = state.errorMessage {
                 HStack(spacing: 8) {
@@ -145,7 +145,7 @@ struct ContentView: View {
         }
     }
 
-    func statusPill(text: String, color: Color) -> some View {
+    private func statusPill(text: String, color: Color) -> some View {
         Text(text)
             .font(.caption.weight(.medium))
             .padding(.horizontal, 10)
@@ -157,7 +157,7 @@ struct ContentView: View {
 
     // MARK: - Tabs
 
-    var browserTab: some View {
+    private var browserTab: some View {
         HStack(alignment: .top, spacing: 16) {
             KicktippWebView(webView: state.kicktippAutomation.webView)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -167,7 +167,7 @@ struct ContentView: View {
         .padding(16)
     }
 
-    var deviceAuthPanel: some View {
+    private var deviceAuthPanel: some View {
         card(title: "Device Login", icon: "person.badge.key") {
             VStack(alignment: .leading, spacing: 12) {
                 if !state.codexDeviceAuthURL.isEmpty {
@@ -198,7 +198,7 @@ struct ContentView: View {
         }
     }
 
-    var codexTab: some View {
+    private var codexTab: some View {
         VStack(spacing: 16) {
             if !state.codexDeviceAuthURL.isEmpty || !state.codexDeviceCode.isEmpty {
                 deviceAuthPanel
@@ -250,7 +250,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    var browserSidePanel: some View {
+    private var browserSidePanel: some View {
         if !state.suggestedTips.isEmpty {
             card(title: "Importierte Tipps", icon: "lightbulb") {
                 VStack(alignment: .leading, spacing: 8) {
