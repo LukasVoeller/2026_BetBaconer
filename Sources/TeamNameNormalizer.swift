@@ -4,12 +4,12 @@ import Foundation
 /// SofaScore or LLM output maps to one key, so exact key comparison works across sources.
 private let teamAliases: [String: String] = {
     let groups: [String: [String]] = [
-        "bayernmunchen": ["fcbayernmunchen", "bayernmunchen", "fcbayern", "bayern", "fcb"],
+        "bayernmunchen": ["fcbayernmunchen", "bayernmunchen", "fcbayern", "bayern", "fcb", "bayernmunich"],
         "dortmund": ["borussiadortmund", "bordortmund", "bvb", "dortmund"],
         "leipzig": ["rbleipzig", "rasenballsportleipzig", "leipzig", "rbl"],
         "bayerleverkusen": ["bayer04leverkusen", "bayer04", "bayerleverkusen", "leverkusen", "b04"],
-        "monchengladbach": ["borussiamonchengladbach", "bormonchengladbach", "monchengladbach", "gladbach", "bmg"],
-        "frankfurt": ["eintrachtfrankfurt", "sgeintrachtfrankfurt", "frankfurt", "sge"],
+        "monchengladbach": ["borussiamonchengladbach", "bormonchengladbach", "monchengladbach", "gladbach", "bmg", "mgladbach"],
+        "frankfurt": ["eintrachtfrankfurt", "sgeintrachtfrankfurt", "frankfurt", "sge", "einfrankfurt"],
         "freiburg": ["scfreiburg", "sportclubfreiburg", "freiburg", "scf"],
         "hoffenheim": ["tsghoffenheim", "1899hoffenheim", "tsg1899hoffenheim", "hoffenheim", "tsg"],
         "werderbremen": ["svwerderbremen", "werderbremen", "bremen", "svw"],
@@ -26,6 +26,10 @@ private let teamAliases: [String: String] = {
         "holsteinkiel": ["holsteinkiel", "kiel", "ksv"],
         "svelversberg": ["sv07elversberg", "svelversberg", "elversberg", "elv"],
         "schalke04": ["fcschalke04", "schalke04", "schalke", "s04"],
+        "darmstadt98": ["svdarmstadt98", "darmstadt98", "darmstadt", "d98"],
+        "herthabsc": ["herthabsc", "herthaberlin", "hertha", "bsc"],
+        "bielefeld": ["arminiabielefeld", "bielefeld", "dsc"],
+        "greutherfurth": ["spvggreutherfurth", "greutherfurth", "furth", "sgf"],
         "paderborn07": ["scpaderborn07", "paderborn07", "paderborn", "scp"],
     ]
     var aliases: [String: String] = [:]

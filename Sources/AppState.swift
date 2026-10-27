@@ -16,6 +16,8 @@ final class AppState {
         static let kicktippPlayerName           = "kicktippPlayerName"
         static let useRankingStrategy           = "useRankingStrategy"
         static let learnedMarketWeight          = "learnedMarketWeight"
+        static let autoRefreshBeforeKickoff     = "autoRefreshBeforeKickoff"
+        static let autoSubmitAfterRefresh       = "autoSubmitAfterRefresh"
     }
 
     private enum SecretKeys {
@@ -70,6 +72,14 @@ final class AppState {
         didSet { UserDefaults.standard.set(learnedMarketWeight, forKey: Keys.learnedMarketWeight) }
     }
     var backtestReport = ""
+    /// Recompute tips about an hour before kickoff with the latest (most accurate) odds.
+    var autoRefreshBeforeKickoff: Bool = UserDefaults.standard.bool(forKey: Keys.autoRefreshBeforeKickoff) {
+        didSet { UserDefaults.standard.set(autoRefreshBeforeKickoff, forKey: Keys.autoRefreshBeforeKickoff) }
+    }
+    var autoSubmitAfterRefresh: Bool = UserDefaults.standard.bool(forKey: Keys.autoSubmitAfterRefresh) {
+        didSet { UserDefaults.standard.set(autoSubmitAfterRefresh, forKey: Keys.autoSubmitAfterRefresh) }
+    }
+    private var lastKickoffRefresh: [String: Date] = [:]
     var generatedPrompt: String = ""
     var importedResponse: String = ""
     var consoleOutput: String = ""
@@ -184,7 +194,7 @@ final class AppState {
     // MARK: - Init
 
     /// Bump whenever tip selection changes, so backtesting stays separated per model version.
-    static let promptVersion = "rating-market-ev-kicktipp-v6"
+    static let promptVersion = "rating-market-ev-kicktipp-v7"
 
     static func currentBundesligaSeason(for date: Date = Date()) -> Int {
         let year = Calendar.current.component(.year, from: date)
@@ -595,7 +605,9 @@ final class AppState {
         await perform {
             let seasonValue = try self.parsedSeason()
             self.infoMessage = "Lade Saisons fuer den Backtest..."
-            await self.loadHistoricalSeasons(before: seasonValue, count: 6)
+            let oldestArchived = self.oddsArchive.compactMap { Int($0.season) }.min() ?? seasonValue
+            let firstEvaluated = min(seasonValue - 4, oldestArchived)
+            await self.loadHistoricalSeasons(before: seasonValue, count: seasonValue - firstEvaluated + 2)
             var seasons = self.historicalSeasons
             seasons[seasonValue] = self.finishedResults.isEmpty
                 ? try await self.ligaService.fetchFinishedMatches(season: seasonValue)
@@ -604,7 +616,7 @@ final class AppState {
             let archive = self.oddsArchive
             self.infoMessage = "Backtest laeuft..."
             let report = await Task.detached(priority: .userInitiated) {
-                backtest.run(seasons: seasons, oddsArchive: archive, evaluatedSeasons: (seasonValue - 4)...seasonValue)
+                backtest.run(seasons: seasons, oddsArchive: archive, evaluatedSeasons: firstEvaluated...seasonValue)
             }.value
             if let best = report.bestMarketWeight {
                 self.learnedMarketWeight = best
@@ -613,6 +625,112 @@ final class AppState {
             self.appendConsole("[Backtest]\n\(report.summary)\n")
             self.infoMessage = "Backtest abgeschlossen."
         }
+    }
+
+    /// Imports football-data.co.uk CSV files (one per season) into the odds archive.
+    func importHistoricalOdds(from urls: [URL]) async {
+        await perform {
+            let seasonValue = try self.parsedSeason()
+            await self.loadHistoricalSeasons(before: seasonValue, count: 10)
+            var seasons = self.historicalSeasons
+            if !self.finishedResults.isEmpty { seasons[seasonValue] = self.finishedResults }
+            var imported: [ArchivedOdds] = []
+            var unmatched = 0
+            for url in urls {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                let result = HistoricalOddsImporter().importCSV(text, seasons: seasons)
+                imported += result.odds
+                unmatched += result.unmatched
+                self.appendConsole("[Quoten-Import] \(url.lastPathComponent): \(result.odds.count) Spiele, \(result.unmatched) nicht zugeordnet.\n")
+            }
+            self.mergeIntoOddsArchive(imported)
+            self.infoMessage = "\(imported.count) historische Quoten importiert (\(unmatched) nicht zugeordnet). Jetzt 'Backtest ausfuehren'."
+        }
+    }
+
+    // MARK: - Kickoff refresh
+
+    /// Matches kicking off in 5-75 minutes that were not refreshed within the last 40 minutes.
+    nonisolated static func matchesDueForKickoffRefresh(_ matches: [UpcomingMatch], lastRefresh: [String: Date], now: Date) -> [UpcomingMatch] {
+        matches.filter { match in
+            guard let kickoff = parseKickoffDate(match.datum) else { return false }
+            let minutes = kickoff.timeIntervalSince(now) / 60
+            let last = lastRefresh[normalizedTeamKey(match.heim, match.gast)]
+            return minutes > 5 && minutes <= 75 && (last.map { now.timeIntervalSince($0) > 40 * 60 } ?? true)
+        }
+    }
+
+    /// Runs while the window is open; checks every 10 minutes whether a kickoff is close.
+    func runKickoffRefreshLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 600_000_000_000)
+            guard autoRefreshBeforeKickoff, !isBusy, !suggestedTips.isEmpty else { continue }
+            let due = Self.matchesDueForKickoffRefresh(upcomingMatches, lastRefresh: lastKickoffRefresh, now: Date())
+            guard !due.isEmpty else { continue }
+            await perform { try await self.refreshTipsBeforeKickoff(due) }
+        }
+    }
+
+    /// Fetches the latest odds, recomputes the due matches and (optionally) enters and submits them.
+    /// No new Codex run: the market already prices in late news, and Codex would take too long.
+    private func refreshTipsBeforeKickoff(_ due: [UpcomingMatch]) async throws {
+        let seasonKey = season.trimmingCharacters(in: .whitespacesAndNewlines)
+        appendConsole("[Anstoss] Aktualisiere \(due.map { "\($0.heim)-\($0.gast)" }.joined(separator: ", ")) mit aktuellen Quoten.\n")
+        var freshOdds: [BettingOdds] = []
+        if !theOddsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let market = try await oddsAPIService.fetchAllMarketOdds()
+            freshOdds = remapOddsToUpcomingMatches(market.h2h, upcomingMatches: upcomingMatches)
+            let freshOverUnder = remapOverUnderToUpcomingMatches(market.overUnder, upcomingMatches: upcomingMatches)
+            let freshKeys = Set(freshOverUnder.map { normalizedTeamKey($0.heim, $0.gast) })
+            overUnderOdds = overUnderOdds.filter { !freshKeys.contains(normalizedTeamKey($0.heim, $0.gast)) } + freshOverUnder
+        } else {
+            try kicktippAutomation.loadTippabgabe(for: kicktippCompetitionSlug)
+            try await waitForKicktippPageToFinishLoading()
+            freshOdds = remapOddsToUpcomingMatches(await kicktippAutomation.extractOddsFromPage().odds, upcomingMatches: upcomingMatches)
+        }
+        let freshKeys = Set(freshOdds.map { normalizedTeamKey($0.heim, $0.gast) })
+        bettingOdds = bettingOdds.filter { !freshKeys.contains(normalizedTeamKey($0.heim, $0.gast)) } + freshOdds
+        archiveCurrentOdds(season: seasonKey)
+
+        let expectedGoals = expectedGoalsByMatch()
+        matchExpectedGoals = expectedGoals.values.sorted { $0.heim < $1.heim }
+        let aggregated = try ensembleService.aggregate(from: [suggestedTips], upcomingMatches: upcomingMatches, bettingOdds: bettingOdds, expectedGoals: expectedGoals)
+        let freshByKey = Dictionary(aggregated.map { (normalizedTeamKey($0.tip.heim, $0.tip.gast), $0) }, uniquingKeysWith: { first, _ in first })
+        let dueKeys = Set(due.map { normalizedTeamKey($0.heim, $0.gast) })
+        for key in dueKeys { lastKickoffRefresh[key] = Date() }
+
+        var changed: [SuggestedTip] = []
+        let refreshed = suggestedTips.map { tip -> SuggestedTip in
+            let key = normalizedTeamKey(tip.heim, tip.gast)
+            guard dueKeys.contains(key), let fresh = freshByKey[key]?.tip,
+                  fresh.toreHeim != tip.toreHeim || fresh.toreGast != tip.toreGast else { return tip }
+            let updated = SuggestedTip(spieltag: tip.spieltag, heim: tip.heim, gast: tip.gast, toreHeim: fresh.toreHeim, toreGast: fresh.toreGast,
+                                       rationale: tip.rationale + " | Kurz vor Anstoss mit aktuellen Quoten neu berechnet.")
+            changed.append(updated)
+            return updated
+        }
+        guard !changed.isEmpty else {
+            appendConsole("[Anstoss] Keine Tippaenderung noetig.\n")
+            return
+        }
+        appendConsole("[Anstoss] Geaendert: \(changed.map { "\($0.heim)-\($0.gast) \($0.toreHeim):\($0.toreGast)" }.joined(separator: ", "))\n")
+        importedResponse = tipWorkflowService.encodeTipsAsJSON(refreshed)
+        importTipsFromResponse(probabilityModels: freshByKey.mapValues(\.model))
+
+        guard autoSubmitAfterRefresh else { return }
+        try await ensureKicktippMatchdayReadyForExtraction()
+        let fields = try await kicktippAutomation.extractMatchFields()
+        let updates = try buildKicktippUpdates(from: fields, requireAll: false)
+            .filter { dueKeys.contains(normalizedTeamKey($0.tip.heim, $0.tip.gast)) }
+        guard !updates.isEmpty else { return }
+        try await kicktippAutomation.applyTips(updates)
+        let mismatches = Self.kicktippMismatches(expected: updates.map(\.tip), fields: try await kicktippAutomation.extractMatchFields())
+        guard mismatches.isEmpty else {
+            throw KicktippAutomationError.javaScriptError("Aktualisierte Tipps nicht korrekt eingetragen: \(mismatches.joined(separator: ", "))")
+        }
+        try await kicktippAutomation.submitTips()
+        kicktippStatus = "Tipps kurz vor Anstoss aktualisiert"
+        appendConsole("[Anstoss] \(updates.count) Tipp(s) eingetragen und abgesendet.\n")
     }
 
     private func loadHistoricalSeasons(before seasonValue: Int, count: Int) async {
@@ -956,7 +1074,7 @@ final class AppState {
 
     // MARK: - Private
 
-    private func buildKicktippUpdates(from fields: [KicktippMatchField]) throws -> [(field: KicktippMatchField, tip: SuggestedTip)] {
+    private func buildKicktippUpdates(from fields: [KicktippMatchField], requireAll: Bool = true) throws -> [(field: KicktippMatchField, tip: SuggestedTip)] {
         let tipMatchdays = Set(suggestedTips.map(\.spieltag))
         guard tipMatchdays.count == 1, let tipMatchday = tipMatchdays.first else {
             throw KicktippAutomationError.javaScriptError("Die importierten Tipps gehoeren zu mehreren Spieltagen.")
@@ -984,7 +1102,7 @@ final class AppState {
         }
 
         let unmatchedTips = suggestedTips.filter { !matchedTipIDs.contains($0.id) }
-        if !unmatchedTips.isEmpty {
+        if requireAll && !unmatchedTips.isEmpty {
             let summary = unmatchedTips
                 .map { "\($0.heim) vs. \($0.gast)" }
                 .joined(separator: ", ")
@@ -1218,91 +1336,20 @@ final class AppState {
         }
     }
 
-    /// Rating model over the current and two previous seasons (parameters from the walk-forward grid search).
-    private func fittedRatingModel() -> TeamRatingModel? {
-        guard let seasonValue = Int(season) else { return nil }
-        let previousTeams = Set((historicalSeasons[seasonValue - 1] ?? []).flatMap { [normalizeTeamName($0.heim), normalizeTeamName($0.gast)] })
-        let currentTeams = Set((finishedResults.map { ($0.heim, $0.gast) } + upcomingMatches.map { ($0.heim, $0.gast) })
-            .flatMap { [normalizeTeamName($0.0), normalizeTeamName($0.1)] })
-        var counts: [String: Int] = [:]
-        for match in finishedResults {
-            counts[normalizeTeamName(match.heim), default: 0] += 1
-            counts[normalizeTeamName(match.gast), default: 0] += 1
-        }
-        let history = (historicalSeasons[seasonValue - 2] ?? []) + (historicalSeasons[seasonValue - 1] ?? [])
-        return teamRatingService.fit(
-            matches: history + finishedResults,
-            promotedTeams: previousTeams.isEmpty ? [] : currentTeams.subtracting(previousTeams),
-            currentSeasonMatchCounts: counts,
-            referenceDate: upcomingMatches.compactMap { parseKickoffDate($0.datum) }.min()
-        )
-    }
-
-    /// Expected goals per match: team ratings blended (in log space) with the bookmaker market,
-    /// then small, confidence-weighted LLM news adjustments. Absence and rest factors only apply
-    /// without market odds, because the market already prices them in.
     private func expectedGoalsByMatch() -> [String: MatchExpectedGoals] {
-        let ratingModel = fittedRatingModel()
-        let oddsByKey = ensembleService.remappedOdds(bettingOdds: bettingOdds, upcomingMatches: upcomingMatches)
-        let overUnderByKey = Dictionary(overUnderOdds.map {
-            (normalizedTeamKey($0.heim, $0.gast), $0)
-        }, uniquingKeysWith: { first, _ in first })
-        let restDays = buildRestDaysByTeam()
-        let absencesByTeam = Dictionary(grouping: playerAbsences) { normalizeTeamName($0.teamName) }
-        let enrichmentByMatch = Dictionary(llmMatchEnrichments.map {
-            (normalizedTeamKey($0.heim, $0.gast), $0)
-        }, uniquingKeysWith: { first, _ in first })
-
-        return Dictionary(upcomingMatches.map { match in
-            let matchKey = normalizedTeamKey(match.heim, match.gast)
-            let rating = ratingModel?.expectedGoals(homeTeam: match.heim, awayTeam: match.gast) ?? (home: 1.6, away: 1.25)
-            var homeXG = rating.home
-            var awayXG = rating.away
-            let enrichment = enrichmentByMatch[matchKey]
-            let confidence = min(max(enrichment?.confidence ?? 0, 0), 1)
-            let marketWeightHint = (enrichment?.marketWeightHint ?? 0) * confidence
-
-            let overUnderTotal = overUnderByKey[matchKey].flatMap {
-                MarketModel.totalGoals(line: $0.line, overQuote: $0.overQuote, underQuote: $0.underQuote)
-            }
-            if let odds = oddsByKey[matchKey], let market = MarketModel.expectedGoals(odds: odds, total: overUnderTotal) {
-                let weight = min(max(learnedMarketWeight + marketWeightHint, 0.3), 0.95)
-                (homeXG, awayXG) = ModelBacktestService.blend(rating: (homeXG, awayXG), market: market, marketWeight: weight)
-            } else {
-                let homeAbsenceImpact = absenceImpact(absencesByTeam[normalizeTeamName(match.heim)] ?? [])
-                let awayAbsenceImpact = absenceImpact(absencesByTeam[normalizeTeamName(match.gast)] ?? [])
-                homeXG *= (1 - homeAbsenceImpact.attack) * (1 + awayAbsenceImpact.defense) * restFactor(restDays[normalizeTeamName(match.heim)])
-                awayXG *= (1 - awayAbsenceImpact.attack) * (1 + homeAbsenceImpact.defense) * restFactor(restDays[normalizeTeamName(match.gast)])
-            }
-
-            var drawCalibration = 0.0
-            if let enrichment {
-                let weight = learnedLLMSignalWeight() * confidence * 0.5
-                homeXG *= 1 + (enrichment.homeAttackAdjustment + enrichment.awayDefenseAdjustment + enrichment.lineupImpact + enrichment.playerValueImpact) * weight
-                awayXG *= 1 + (enrichment.awayAttackAdjustment + enrichment.homeDefenseAdjustment - enrichment.lineupImpact - enrichment.playerValueImpact) * weight
-                if enrichment.totalGoalsAdjustment != 0 {
-                    (homeXG, awayXG) = scaleTotal(homeXG: homeXG, awayXG: awayXG, targetTotal: max(0.8, homeXG + awayXG + enrichment.totalGoalsAdjustment * weight), weight: 1)
-                }
-                drawCalibration = enrichment.scorelineDrawCalibration * confidence
-            }
-
-            if learningState.sampleSize >= 30 {
-                homeXG -= learningState.avgHomeGoalOverprediction * 0.2
-                awayXG -= learningState.avgAwayGoalOverprediction * 0.2
-            }
-
-            return (
-                matchKey,
-                MatchExpectedGoals(
-                    heim: match.heim,
-                    gast: match.gast,
-                    home: min(max(homeXG, 0.2), 4.5),
-                    away: min(max(awayXG, 0.2), 4.5),
-                    drawCalibration: drawCalibration,
-                    marketWeightHint: marketWeightHint
-                )
-            )
-        }, uniquingKeysWith: { first, _ in first })
+        ExpectedGoalsModel(ratingService: teamRatingService).expectedGoals(ExpectedGoalsInput(
+            season: Int(season) ?? Self.currentBundesligaSeason(),
+            finishedResults: finishedResults,
+            historicalSeasons: historicalSeasons,
+            upcomingMatches: upcomingMatches,
+            bettingOdds: bettingOdds,
+            overUnderOdds: overUnderOdds,
+            playerAbsences: playerAbsences,
+            llmMatchEnrichments: llmMatchEnrichments,
+            marketWeight: learnedMarketWeight,
+            llmSignalWeight: learnedLLMSignalWeight(),
+            learningState: learningState
+        ))
     }
 
     private func learnedLLMSignalWeight() -> Double {
@@ -1311,52 +1358,6 @@ final class AppState {
 
     private func decodedLearningWeights() -> LearningCorrectionWeights? {
         try? JSONDecoder().decode(LearningCorrectionWeights.self, from: Data(learningState.weightsJSON.utf8))
-    }
-
-    private func scaleTotal(homeXG: Double, awayXG: Double, targetTotal: Double, weight: Double) -> (Double, Double) {
-        let currentTotal = max(0.1, homeXG + awayXG)
-        let blendedTotal = currentTotal * (1 - weight) + targetTotal * weight
-        let factor = blendedTotal / currentTotal
-        return (homeXG * factor, awayXG * factor)
-    }
-
-    private func absenceImpact(_ absences: [PlayerAbsence]) -> (attack: Double, defense: Double) {
-        let raw = min(0.20, Double(absences.count) * 0.025)
-        let attackReasons = ["forward", "wing", "striker", "thigh", "muscle", "illness"]
-        let defenseReasons = ["defender", "centre-back", "knee", "ankle", "calf", "surgery"]
-        let text = absences.map { "\($0.playerName) \($0.reason)" }.joined(separator: " ").lowercased()
-        let attack = raw * (attackReasons.contains { text.contains($0) } ? 1.1 : 0.8)
-        let defense = raw * (defenseReasons.contains { text.contains($0) } ? 1.1 : 0.8)
-        return (min(0.25, attack), min(0.25, defense))
-    }
-
-    private func restFactor(_ days: Int?) -> Double {
-        guard let days else { return 1 }
-        if days < 4 { return 0.92 }
-        if days > 8 { return 1.03 }
-        return 1
-    }
-
-    private func buildRestDaysByTeam() -> [String: Int] {
-        func date(from raw: String) -> Date? {
-            parseKickoffDate(raw)
-        }
-
-        var result: [String: Int] = [:]
-        for match in upcomingMatches {
-            guard let kickoff = date(from: match.datum) else { continue }
-            for team in [match.heim, match.gast] {
-                let last = finishedResults
-                    .filter { $0.heim == team || $0.gast == team }
-                    .compactMap { date(from: $0.datum) }
-                    .filter { $0 < kickoff }
-                    .max()
-                if let last {
-                    result[normalizeTeamName(team)] = max(0, Calendar.current.dateComponents([.day], from: last, to: kickoff).day ?? 0)
-                }
-            }
-        }
-        return result
     }
 
     private func parsedSeason() throws -> Int {

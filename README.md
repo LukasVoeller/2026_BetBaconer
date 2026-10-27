@@ -69,6 +69,8 @@ Backtest-Stand (nur Statistik, ohne Quoten, 1.836 Spiele): 1,28 Punkte/Tipp, Fau
 
 Jede Quote, die die App sieht (The Odds API oder Kicktipp), wird pro Spiel im Learning-Store archiviert (die letzte vor Anstoss gewinnt). `Kicktipp-Historie laden` liest zusaetzlich die Quoten vergangener Spieltage aus `tippabgabe?spieltagIndex=<n>` nach, sofern Kicktipp sie dort anzeigt.
 
+Fuer einen sofort belastbaren Backtest: `Learning > Quoten-CSV importieren` mit den Dateien `https://www.football-data.co.uk/mmz4281/<saison>/D1.csv` (z. B. `2324`, `2425`). Bevorzugt werden Schlussquoten (Pinnacle, sonst Durchschnitt).
+
 `Learning > Backtest ausfuehren` laedt die letzten Saisons von OpenLigaDB, sagt jeden Spieltag nur aus vorher gespielten Spielen vorher und vergleicht Modell, Faustregel und Marktgewichte 0-100 % auf den archivierten Quoten. Das beste Marktgewicht wird automatisch uebernommen.
 
 LLM-Zusatzdaten werden nur klein und confidence-gewichtet in xG eingerechnet. Nicht belegbare Signale bleiben neutral.
@@ -76,7 +78,13 @@ Neue PredictionRuns speichern xG, LLM-Lineup, Spielerwert, Sharp/Closing, histor
 Beim Auswerten werden fehlende Closing-Line-Hinweise per LLM/Web-Recherche nachgezogen und als CLV-Signal gespeichert.
 Self-Learning bewertet alle Runs, lernt aber pro Spieltag nur aus einem: dem in Kicktipp eingetragenen Stand, sonst dem Ensemble, sonst dem neuesten Einzel-Lauf.
 Self-Learning zeigt Backtesting je Modellversion, sobald mindestens 5 bewertete Tipps fuer eine Version vorliegen.
-Aktuelle Modellversion im Learning-Store: `rating-market-ev-kicktipp-v6`.
+Aktuelle Modellversion im Learning-Store: `rating-market-ev-kicktipp-v7`.
+
+## Kurz vor Anstoss
+
+Optional (`Einstellungen > Kurz vor Anstoss`): Solange die App geoeffnet ist, prueft sie alle 10 Minuten, ob ein Spiel in den naechsten 75 Minuten beginnt. Fuer diese Spiele holt sie die aktuellsten Quoten (The Odds API, sonst Kicktipp), archiviert sie, berechnet den Tipp ohne neuen Codex-Lauf neu und traegt geaenderte Tipps auf Wunsch automatisch ein (mit Read-back) und sendet ab. Quoten direkt vor Anstoss enthalten Aufstellungen und Kurzfrist-News und sind die genaueste verfuegbare Prognose.
+
+Liegen Quoten vor, fliessen die Codex-Scorelines nicht zusaetzlich ins xG ein, weil Codex dieselben Quoten im Prompt sieht (keine Doppelzaehlung).
 
 ## Mitspieler-Tipps
 

@@ -42,7 +42,7 @@ struct EnsembleService {
         let model: MatchProbabilityModel
     }
 
-    /// Share of the Codex runs' mean scoreline blended into the statistical xG.
+    /// Share of the Codex runs' mean scoreline blended into the statistical xG (only without market odds).
     static let llmSignalWeight = 0.2
 
     var rules: KicktippRules = .standard
@@ -92,7 +92,8 @@ struct EnsembleService {
             if let statistical = expectedGoals[key] {
                 let llmHome = candidates.map { Double($0.toreHeim) }.average
                 let llmAway = candidates.map { Double($0.toreGast) }.average
-                let weight = Self.llmSignalWeight
+                // Codex sees the odds in its prompt; with a market price its scoreline would count the market twice.
+                let weight = odds == nil ? Self.llmSignalWeight : 0
                 goals = (
                     clampedExpectedGoals(statistical.home * (1 - weight) + llmHome * weight),
                     clampedExpectedGoals(statistical.away * (1 - weight) + llmAway * weight)

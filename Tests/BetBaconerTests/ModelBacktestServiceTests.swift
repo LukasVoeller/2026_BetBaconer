@@ -92,3 +92,53 @@ final class ModelBacktestServiceTests {
         XCTAssertGreaterThan(report.bestMarketWeight ?? 0, 0.5)
     }
 }
+
+extension ModelBacktestServiceTests {
+    @Test
+    func testImportsFootballDataCSVWithClosingOdds() {
+        let csv = """
+        Div,Date,Time,HomeTeam,AwayTeam,FTHG,FTAG,B365H,B365D,B365A,PSCH,PSCD,PSCA,PC>2.5,PC<2.5
+        D1,18/08/2023,19:30,Werder Bremen,Bayern Munich,0,4,8.00,5.50,1.33,8.50,5.60,1.35,1.50,2.70
+        D1,19/08/2023,14:30,M'gladbach,Leverkusen,0,3,3.40,3.80,2.00,3.50,3.90,2.02,1.60,2.40
+        D1,19/08/2023,14:30,Unknown FC,Ein Frankfurt,1,1,2.00,3.40,3.60,2.10,3.40,3.50,1.80,2.00
+        """
+        let seasons = [2023: [
+            FinishedMatch(spieltag: 1, datum: "2023-08-18T18:30:00Z", heim: "SV Werder Bremen", gast: "FC Bayern München", toreHeim: 0, toreGast: 4),
+            FinishedMatch(spieltag: 1, datum: "2023-08-19T13:30:00Z", heim: "Borussia Mönchengladbach", gast: "Bayer 04 Leverkusen", toreHeim: 0, toreGast: 3),
+        ]]
+
+        let result = HistoricalOddsImporter().importCSV(csv, seasons: seasons)
+
+        XCTAssertEqual(result.odds.count, 2)
+        XCTAssertEqual(result.unmatched, 1)
+        XCTAssertEqual(result.odds[0].quoteHeim, "8.5")
+        XCTAssertEqual(result.odds[0].heim, "SV Werder Bremen")
+        XCTAssertEqual(result.odds[0].overUnderLine, 2.5)
+    }
+
+    @Test
+    func testKickoffRefreshSelectsOnlyMatchesStartingSoon() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func match(_ minutes: Double, _ home: String) -> UpcomingMatch {
+            UpcomingMatch(spieltag: 1, datum: ISO8601DateFormatter().string(from: now.addingTimeInterval(minutes * 60)), heim: home, gast: "Gegner")
+        }
+        let matches = [match(60, "Bald"), match(3, "Zu spaet"), match(200, "Spaeter"), match(30, "Schon aktualisiert")]
+        let refreshed = [normalizedTeamKey("Schon aktualisiert", "Gegner"): now.addingTimeInterval(-10 * 60)]
+
+        let due = AppState.matchesDueForKickoffRefresh(matches, lastRefresh: refreshed, now: now)
+
+        XCTAssertEqual(due.map(\.heim), ["Bald"])
+    }
+
+    @Test
+    func testCodexScorelineIsIgnoredWhenMarketOddsExist() throws {
+        let match = UpcomingMatch(spieltag: 1, datum: "", heim: "Team A", gast: "Team B")
+        let runs = [[SuggestedTip(spieltag: 1, heim: "Team A", gast: "Team B", toreHeim: 0, toreGast: 4, rationale: "")]]
+        let expected = [normalizedTeamKey("Team A", "Team B"): MatchExpectedGoals(heim: "Team A", gast: "Team B", home: 2.0, away: 0.8)]
+        let odds = [BettingOdds(heim: "Team A", gast: "Team B", quoteHeim: "1.50", quoteUnentschieden: "4.50", quoteGast: "6.50")]
+
+        let withOdds = try EnsembleService().aggregate(from: runs, upcomingMatches: [match], bettingOdds: odds, expectedGoals: expected)[0]
+
+        XCTAssertEqual(withOdds.model.expectedHomeGoals, 2.0, accuracy: 0.0001)
+    }
+}

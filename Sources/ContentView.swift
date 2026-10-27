@@ -37,6 +37,9 @@ struct ContentView: View {
         .task {
             await state.initializeKicktipp()
         }
+        .task {
+            await state.runKickoffRefreshLoop()
+        }
         .confirmationDialog(
             "Vorhandene Kicktipp-Tipps ueberschreiben?",
             isPresented: Binding(
@@ -181,6 +184,14 @@ struct ContentView: View {
                                 .buttonStyle(.bordered)
                         }
                     }
+                }
+                inputGroup(title: "Kurz vor Anstoss") {
+                    Toggle("Tipps 60 Min. vor Anstoss mit aktuellen Quoten neu berechnen", isOn: $state.autoRefreshBeforeKickoff)
+                    Toggle("Geaenderte Tipps automatisch eintragen und absenden", isOn: $state.autoSubmitAfterRefresh)
+                        .disabled(!state.autoRefreshBeforeKickoff)
+                    Text("Quoten direkt vor Anstoss enthalten Aufstellungen und Kurzfrist-News und sind die genaueste Prognose. Die App muss dafuer geoeffnet sein.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 inputGroup(title: "Ranglisten-Strategie") {
                     TextField("Mein Name in der Tipprunde", text: $state.kicktippPlayerName)
@@ -752,11 +763,24 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     metricRow("Marktgewicht", String(format: "%.0f%%", state.learnedMarketWeight * 100))
                     metricRow("Archivierte Quoten", "\(state.oddsArchive.count)")
-                    Button("Backtest ausfuehren") {
-                        Task { await state.runModelBacktest() }
+                    HStack {
+                        Button("Backtest ausfuehren") {
+                            Task { await state.runModelBacktest() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(brandOrange)
+                        Button("Quoten-CSV importieren") {
+                            let panel = NSOpenPanel()
+                            panel.allowedContentTypes = [.commaSeparatedText]
+                            panel.allowsMultipleSelection = true
+                            panel.message = "football-data.co.uk D1.csv-Dateien auswaehlen"
+                            if panel.runModal() == .OK {
+                                let urls = panel.urls
+                                Task { await state.importHistoricalOdds(from: urls) }
+                            }
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(brandOrange)
                     .disabled(state.isBusy)
                     if state.backtestReport.isEmpty {
                         emptyState("Prueft das Modell Spieltag fuer Spieltag an den letzten Saisons und lernt das Marktgewicht aus dem Quoten-Archiv.")

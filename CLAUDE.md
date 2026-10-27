@@ -20,6 +20,8 @@ Der Nutzer soll mit einem einzigen Klick KI-gestützte Tipps in sein Kicktipp-Ko
 - **OpenLigaDBService** (`OpenLigaDBService.swift`) — Spielplan/Ergebnisse; nutzt `matchDateTimeUTC`, überspringt Nachholspiele
 - **TheOddsAPIService** / **SofaScoreService** / **TheSportsDBService** / **WeatherService** — Quoten, Ausfälle, Team-/Stadiondaten, Wetter (Open-Meteo)
 - **TeamRatingService** (`TeamRatingService.swift`) — Poisson-Rating über 3 Saisons (Newton-Fit, L2, Aufsteiger, Tor-Kalibrierung) und `MarketModel` (erwartete Tore aus Quoten)
+- **ExpectedGoalsModel** (`ExpectedGoalsModel.swift`) — reine xG-Berechnung (Rating + Markt + LLM), Eingabe `ExpectedGoalsInput`
+- **HistoricalOddsImporter** (`HistoricalOddsImporter.swift`) — football-data.co.uk-CSV ins Quoten-Archiv
 - **ModelBacktestService** (`ModelBacktestService.swift`) — Walk-forward-Backtest, lernt das Marktgewicht aus dem Quoten-Archiv
 - **EnsembleService** (`EnsembleService.swift`) — Scoreline-Matrix (Dixon-Coles), Auswahl nach erwarteten Kicktipp-Punkten (`KicktippRules`)
 - **TipWorkflowService** (`TipWorkflowService.swift`) — Prompt-Generierung und JSON-Parsing der LLM-Antworten (lehnt Duplikate/ungültige Ergebnisse ab)
