@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Models
 
 /// One tip of a fellow player for a finished match, including the points Kicktipp awarded.
-struct CommunityTip: Codable, Hashable {
+struct CommunityTip: Codable, Hashable, Sendable {
     let heim: String
     let gast: String
     let home: Int
@@ -11,7 +11,7 @@ struct CommunityTip: Codable, Hashable {
     let points: Int?
 }
 
-struct CommunityPlayer: Codable, Hashable {
+struct CommunityPlayer: Codable, Hashable, Sendable {
     let name: String
     let tips: [CommunityTip]
     let matchdayPoints: Int?
@@ -19,7 +19,7 @@ struct CommunityPlayer: Codable, Hashable {
     let totalPoints: Int?
 }
 
-struct CommunityMatchday: Codable, Hashable {
+struct CommunityMatchday: Codable, Hashable, Sendable {
     let season: String
     let spieltag: Int
     let results: [FinishedMatch]
@@ -27,7 +27,7 @@ struct CommunityMatchday: Codable, Hashable {
 }
 
 /// Raw table as extracted from the Kicktipp "Tippuebersicht" page (cell texts only).
-struct CommunityTable: Decodable {
+struct CommunityTable: Decodable, Sendable {
     let url: String
     let header: [[String]]
     let rows: [[String]]
@@ -45,12 +45,12 @@ enum KicktippCommunityError: LocalizedError {
 }
 
 /// Points rules derived from observed tips and awarded points.
-struct InferredKicktippRules: Equatable {
+struct InferredKicktippRules: Equatable, Sendable {
     let rules: KicktippRules
     let sampleCount: Int
 }
 
-struct CommunityStyle: Equatable {
+struct CommunityStyle: Equatable, Sendable {
     let name: String
     let tipCount: Int
     let pointsPerTip: Double
@@ -60,7 +60,7 @@ struct CommunityStyle: Equatable {
 }
 
 /// Model tips of one matchday compared with the betting group.
-struct CommunityBacktestRow: Equatable, Identifiable {
+struct CommunityBacktestRow: Equatable, Identifiable, Sendable {
     let spieltag: Int
     let appPoints: Int
     let groupAverage: Double
@@ -72,7 +72,7 @@ struct CommunityBacktestRow: Equatable, Identifiable {
 }
 
 /// How the ranking situation should bend the tip selection.
-struct RankingStrategy: Equatable {
+struct RankingStrategy: Equatable, Sendable {
     enum Mode: Equatable { case differentiate, followCrowd }
 
     let mode: Mode

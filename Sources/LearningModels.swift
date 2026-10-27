@@ -1,6 +1,6 @@
 import Foundation
 
-public enum MatchOutcome: String, Codable {
+public enum MatchOutcome: String, Codable, Sendable {
     case homeWin
     case draw
     case awayWin
@@ -14,7 +14,7 @@ public enum MatchOutcome: String, Codable {
     }
 }
 
-public struct PredictionRun: Codable, Identifiable {
+public struct PredictionRun: Codable, Identifiable, Sendable {
     public let id: UUID
     public let createdAt: Date
     public let spieltag: Int
@@ -42,13 +42,13 @@ public struct PredictionRun: Codable, Identifiable {
     }
 }
 
-public struct ScorelineProbability: Codable, Hashable {
+public struct ScorelineProbability: Codable, Hashable, Sendable {
     public let homeGoals: Int
     public let awayGoals: Int
     public let probability: Double
 }
 
-public struct MatchPrediction: Codable, Identifiable, Hashable {
+public struct MatchPrediction: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public let runId: UUID
     public let spieltag: Int
@@ -375,7 +375,7 @@ Selbstlernende Korrekturen aus bisherigen Vorhersagen:
     }
 }
 
-public struct LearningCorrectionWeights: Codable {
+public struct LearningCorrectionWeights: Codable, Sendable {
     var drawBoost: Double
     var homeGoalReductionBias: Double
     var highScoreDampening: Double
