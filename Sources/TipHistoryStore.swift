@@ -1,13 +1,14 @@
 import Foundation
 
 enum TipHistoryStoreError: LocalizedError {
-    case failedToLoad
+    case failedToLoad(backup: URL?)
     case failedToSave
 
     var errorDescription: String? {
         switch self {
-        case .failedToLoad:
+        case let .failedToLoad(backup):
             return "Der Tipp-Verlauf konnte nicht geladen werden."
+                + (backup.map { " Die Datei wurde nach \($0.lastPathComponent) gesichert, es wird neu begonnen." } ?? " Speichern ist deaktiviert, um Datenverlust zu vermeiden.")
         case .failedToSave:
             return "Der Tipp-Verlauf konnte nicht gespeichert werden."
         }
@@ -32,7 +33,7 @@ struct TipHistoryStore {
             return try decoder.decode([TipGenerationRecord].self, from: data)
         } catch {
             AppLogger.persistence.error("Tip history load failed: \(error.localizedDescription, privacy: .public)")
-            throw TipHistoryStoreError.failedToLoad
+            throw TipHistoryStoreError.failedToLoad(backup: AppSupportPaths.quarantine(fileURL))
         }
     }
 

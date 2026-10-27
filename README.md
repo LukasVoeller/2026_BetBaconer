@@ -6,12 +6,13 @@ Native macOS-App fuer Bundesliga-Tipps in Kicktipp.
 
 ## Was Die App Macht
 
-- Laedt den naechsten Bundesliga-Spieltag.
+- Laedt den naechsten Bundesliga-Spieltag (Nachholspiele frueherer Spieltage werden uebersprungen).
 - Laedt Quoten, Form, Tabelle, Verletzungen und Wetter.
 - Recherchiert fehlende Zusatzdaten per LLM/Web-Recherche.
 - Laesst Codex eine oder mehrere Analysen erzeugen.
 - Berechnet pro Spiel xG aus Teamratings, Marktquoten und Kontextdaten.
-- Waehlt das wahrscheinlichste exakte Ergebnis per Dixon-Coles/Poisson-Modell.
+- Waehlt pro Spiel das Ergebnis mit den meisten erwarteten Kicktipp-Punkten (Dixon-Coles/Poisson-Modell, Punkteregel der Tipprunde).
+- Liest die Tipps der Mitspieler vergangener Spieltage aus der Kicktipp-Tippuebersicht.
 - Speichert Tipps und Learning-Daten lokal.
 - Traegt Tipps in Kicktipp ein und kann sie absenden.
 
@@ -33,6 +34,14 @@ Native macOS-App fuer Bundesliga-Tipps in Kicktipp.
 6. `Kicktipp > Tipps eintragen`
 7. `Kicktipp > Tipps absenden`
 
+Sicherheitsnetze:
+
+- Tipps werden nur eingetragen, wenn sie zum offenen Spieltag passen und alle Spiele zugeordnet werden koennen.
+- Bereits vorhandene, abweichende Tipps werden erst nach Bestaetigung ueberschrieben.
+- Nach dem Eintragen liest die App das Formular erneut aus und meldet Abweichungen.
+- Beim Absenden werden Abweichungen zwischen Formular und importierten Tipps in die Console geschrieben.
+- Waehrend ein Vorgang laeuft, sind alle Aktionen gesperrt; Codex-Laeufe koennen per `Codex abbrechen` gestoppt werden.
+
 Copy-Buttons:
 
 - `Alles kopieren`: Ergebnisse, Begruendung, xG, Quoten, Kontext, LLM-Zusatzdaten und Ausfaelle
@@ -44,55 +53,48 @@ Manuell in Kicktipp eingetragene Tipps werden beim Laden, Lesen, Absenden oder A
 
 Die finale Scoreline kommt nicht direkt von Codex.
 
-Codex liefert Analyse und Begruendung. Die App berechnet danach deterministisch die wahrscheinlichste exakte Scoreline.
+Codex liefert Analyse, Begruendung und eine eigene Scoreline. Der Mittelwert der Codex-Scorelines fliesst mit 20 % in das statistische xG ein; die finale Scoreline berechnet die App deterministisch.
 
-Beruecksichtigte Faktoren:
+Finalmodell (Parameter per Walk-forward-Backtest ueber die Saisons 2020-2025 gewaehlt):
 
-- Tabellenstand
-- zeitgewichtete Teamratings per Maximum Likelihood
-- Form der letzten Spiele mit Zeitverfall
-- Tore und Gegentore pro Spiel
-- Heim-/Auswaertsleistung
-- Heimvorteil
-- H2H-Quoten
-- Over/Under-Quoten
-- BTTS-Quoten
-- Asian-Handicap-Quoten
-- Verletzungen und Sperren
-- Resttage
-- LLM-recherchierte Zusatzbelastung durch Pokal/Europa, wenn belegbar
-- LLM-recherchierte Shots-/Lineup-/Spielerimpact-Hinweise, wenn belegbar
-- LLM-recherchierte Schiedsrichter-Stats, wenn belegbar
-- LLM-recherchierte Sharp-Odds/Exchange-Hinweise, wenn belegbar
-- LLM-recherchierte Spielerwert-Hinweise nach Minuten, Position, xG/xA, Defensive Actions oder Keeper-Wert
-- LLM-recherchierte Closing-Line-/CLV-Hinweise, wenn oeffentlich belegbar
-- LLM-recherchierte saisonuebergreifende historische Basisdaten
-- LLM-recherchierte Scoreline-Kalibrierung aus historischer Ergebnisverteilung
-- Wetter, wenn verfuegbar
-- fruehere eigene Tipps und Self-Learning-Bias
+1. **Team-Rating:** zeitgewichtetes Poisson-Attack/Defense-Modell ueber die laufende und zwei Vorsaisons (Halbwertszeit 365 Tage, L2-Regularisierung, Aufsteiger starten unter Liganiveau, Tor-Kalibrierung gegen systematische Unterschaetzung).
+2. **Markt:** Aus H2H-Quoten (und O/U, falls vorhanden) werden die erwarteten Tore direkt geloest und geometrisch mit dem Rating gemischt. Marktgewicht Standard 80 %, gelernt per Backtest aus dem Quoten-Archiv, sobald mindestens 45 archivierte Spiele vorliegen. Ohne Quoten wirken stattdessen Ausfaelle und Resttage.
+3. **Codex:** Mittelwert der Codex-Scorelines mit 20 %, LLM-Zusatzdaten klein und confidence-gewichtet.
+4. **Auswahl:** Dixon-Coles-Scoreline-Matrix bis `6:6`; gewaehlt wird die Scoreline mit den meisten erwarteten Kicktipp-Punkten (Punkteregel der Tipprunde, bei Gleichstand die heimstaerkere).
+5. Gespeichert werden 1/X/2-Wahrscheinlichkeiten, Top-3-Scorelines und ein heuristischer Sicherheitswert.
 
-Finalmodell:
+Backtest-Stand (nur Statistik, ohne Quoten, 1.836 Spiele): 1,28 Punkte/Tipp, Faustregel „Favorit 2:1“ 1,29. Ohne Marktdaten ist kein Modell signifikant besser als diese Faustregel; der Vorsprung muss aus Quoten und Kurzfrist-News kommen.
 
-- xG je Team aus Attack-/Defense-Rating
-- fruehe Saisonwerte werden zur Liga-Norm zurueckgezogen
-- Markt-Kalibrierung ueber H2H, O/U, BTTS und Asian Handicap
-- marktnahe Spiele werden gegen unrealistische Kantersiege gedaempft
-- Spieltage werden auf realistische Remis-Haeufigkeit kalibriert, meist 2-3 Remis bei 9 Spielen
-- Marktgewicht steigt automatisch, wenn Self-Learning schlechter als Markt-Baseline kalibriert ist
-- Dixon-Coles-Korrektur fuer `0:0`, `1:0`, `0:1`, `1:1`
-- Scoreline-Matrix bis `6:6`
-- hoechste Einzelwahrscheinlichkeit gewinnt
+## Quoten-Archiv und Backtest
+
+Jede Quote, die die App sieht (The Odds API oder Kicktipp), wird pro Spiel im Learning-Store archiviert (die letzte vor Anstoss gewinnt). `Kicktipp-Historie laden` liest zusaetzlich die Quoten vergangener Spieltage aus `tippabgabe?spieltagIndex=<n>` nach, sofern Kicktipp sie dort anzeigt.
+
+`Learning > Backtest ausfuehren` laedt die letzten Saisons von OpenLigaDB, sagt jeden Spieltag nur aus vorher gespielten Spielen vorher und vergleicht Modell, Faustregel und Marktgewichte 0-100 % auf den archivierten Quoten. Das beste Marktgewicht wird automatisch uebernommen.
 
 LLM-Zusatzdaten werden nur klein und confidence-gewichtet in xG eingerechnet. Nicht belegbare Signale bleiben neutral.
 Neue PredictionRuns speichern xG, LLM-Lineup, Spielerwert, Sharp/Closing, historische Basis, Datenqualitaet und Modellversion.
 Beim Auswerten werden fehlende Closing-Line-Hinweise per LLM/Web-Recherche nachgezogen und als CLV-Signal gespeichert.
+Self-Learning bewertet alle Runs, lernt aber pro Spieltag nur aus einem: dem in Kicktipp eingetragenen Stand, sonst dem Ensemble, sonst dem neuesten Einzel-Lauf.
 Self-Learning zeigt Backtesting je Modellversion, sobald mindestens 5 bewertete Tipps fuer eine Version vorliegen.
-Aktuelle Modellversion im Learning-Store: `xg-dixon-coles-shrinkage-llm-v4`.
+Aktuelle Modellversion im Learning-Store: `rating-market-ev-kicktipp-v6`.
+
+## Mitspieler-Tipps
+
+`Self-Learning > Mitspieler-Tipps laden` (und automatisch bei `Tipps generieren`) oeffnet fuer jeden abgeschlossenen Spieltag `https://www.kicktipp.de/<slug>/tippuebersicht?spieltagIndex=<n>`, liest Tipps, Punkte und Gesamtstand aller Mitspieler und gleicht die Kicktipp-Kuerzel (VFB, BMG, ...) mit den OpenLigaDB-Ergebnissen ab. Fehlende Spieltage werden nachgeladen, der letzte wird aktualisiert. Danach kehrt der Browser zur Tippabgabe zurueck.
+
+Verwendung:
+
+- **Punkteregel pruefen:** Aus vergebenen Punkten wird die Regel der Tipprunde abgeleitet; Abweichungen zur Einstellung werden angezeigt und koennen uebernommen werden.
+- **Stil-Benchmark im Prompt:** Punkte je Tipp, Remis-Anteil, 1-Tor-Differenz und Torniveau der Top-5 vs. Rest sowie die tatsaechliche Remis-/Torquote gehen als Kalibrierung an Codex.
+- **App vs. Tipprunde:** Der Learning-Tab zeigt je Spieltag Punkte und Rang der App-Tipps innerhalb der Runde.
+- **Ranglisten-Strategie (optional, Default aus):** Mit eigenem Namen in den Einstellungen bestimmt die Ranglage, ob die App vom typischen Mehrheitstipp der Runde (z. B. 2:1) abweicht (bei Rueckstand) oder ihm folgt (bei Fuehrung). Der Verzicht ist auf `0,05 x Punkte je Restspieltag`, maximal 0,25 erwartete Punkte pro Spiel begrenzt und wirkt daher vor allem spaet in der Saison.
+
+Die Tipps der Mitspieler fuer den kommenden Spieltag sind vor Anstoss nicht sichtbar und fliessen daher nicht direkt in die Vorhersage ein.
 
 ## Datenquellen
 
 - OpenLigaDB: Spielplan, Ergebnisse, Tabelle/Formbasis
-- Kicktipp: Tippformular und Quoten-Fallback
+- Kicktipp: Tippformular, Quoten-Fallback und Tippuebersicht der Mitspieler
 - The Odds API: H2H, O/U, BTTS, Asian Handicap
 - SofaScore: Verletzungen und Sperren
 - TheSportsDB: Team- und Stadiondaten
@@ -107,14 +109,20 @@ Aktuelle Modellversion im Learning-Store: `xg-dixon-coles-shrinkage-llm-v4`.
 - `Competition Slug`: Kicktipp-Runde
 - `The Odds API Key`: optional, im macOS-Keychain
 - `Codex-Laeufe`: Anzahl der Analyse-Laeufe, Default `1`
+- `Kicktipp-Punkteregel`: Punkte fuer Ergebnis/Tordifferenz/Tendenz (Default 4/3/2) und ob Remis mit falschem Ergebnis Tordifferenz-Punkte geben (Default ja, wie im Kicktipp-Standard: 1:1 bei 0:0 = 3 Punkte)
+
+Codex wird immer mit `--sandbox read-only` und einem Timeout (15 Minuten pro Lauf, 60 Sekunden fuer den Statuscheck) gestartet.
 
 Ohne The-Odds-API-Key nutzt die App Kicktipp-Quoten als Fallback. Nicht per API verfuegbare Zusatzdaten werden per LLM-Web-Recherche gesucht.
 
 ## Entwicklung
 
+Die SwiftUI-Macros sind nur in der Xcode-Toolchain enthalten, nicht in den Command Line Tools:
+
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 swift build
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+swift test
 swift run
 ```
 
@@ -130,5 +138,7 @@ Dateien:
 
 - `learning-store.json`
 - `tip-history.json`
+
+Kann eine Datei nicht gelesen werden, wird sie als `*.corrupt-<Zeitstempel>.json` gesichert und die App startet mit leerem Stand. Schlaegt das Sichern fehl, wird das Speichern deaktiviert, damit nichts ueberschrieben wird.
 
 Secrets liegen im macOS-Keychain.

@@ -133,28 +133,6 @@ struct WeatherService: Sendable {
             ?? Self.makeLocalDateFormatter("yyyy-MM-dd'T'HH:mm:ss").date(from: raw)
     }
 
-    private func normalizeTeamName(_ name: String) -> String {
-        let folded = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-        let lowered = folded.lowercased()
-        let allowedScalars = lowered.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
-        let compact = String(String.UnicodeScalarView(allowedScalars))
-        let aliases: [String: String] = [
-            "borussiamonchengladbach": "monchengladbach",
-            "bormonchengladbach": "monchengladbach",
-            "tsghoffenheim": "hoffenheim",
-            "1899hoffenheim": "hoffenheim",
-            "svwerderbremen": "werderbremen",
-            "werderbremen": "werderbremen",
-            "1fsvmainz05": "mainz05",
-            "fsvmainz05": "mainz05",
-            "1fcunionberlin": "unionberlin",
-            "unionberlin": "unionberlin",
-            "fcbayernmunchen": "bayernmunchen",
-            "bayernmunchen": "bayernmunchen",
-        ]
-        return aliases[compact] ?? compact
-    }
-
     private static func makeISO8601Formatter(withFractionalSeconds: Bool) -> ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = withFractionalSeconds

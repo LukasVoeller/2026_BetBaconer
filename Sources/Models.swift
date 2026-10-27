@@ -1,6 +1,6 @@
 import Foundation
 
-public struct FinishedMatch: Codable, Identifiable, Hashable {
+public struct FinishedMatch: Codable, Identifiable, Hashable, Sendable {
     public let spieltag: Int
     public let datum: String
     public let heim: String
@@ -134,6 +134,25 @@ struct HandicapOdds: Codable, Identifiable, Hashable {
     let awayHandicap: Double  // z. B. +0.5
     let awayQuote: String
     var id: String { "\(heim)-\(gast)" }
+}
+
+/// Bookmaker odds captured for a match (Kicktipp or The Odds API), kept to backtest the market weight.
+struct ArchivedOdds: Codable, Hashable, Sendable {
+    let season: String
+    let spieltag: Int
+    let heim: String
+    let gast: String
+    let quoteHeim: String
+    let quoteUnentschieden: String
+    let quoteGast: String
+    let overUnderLine: Double?
+    let overQuote: String?
+    let underQuote: String?
+    let capturedAt: Date
+
+    var bettingOdds: BettingOdds {
+        BettingOdds(heim: heim, gast: gast, quoteHeim: quoteHeim, quoteUnentschieden: quoteUnentschieden, quoteGast: quoteGast)
+    }
 }
 
 struct MatchExpectedGoals: Hashable {
@@ -327,31 +346,6 @@ struct LLMClosingLineUpdate: Codable, Hashable {
         case closingLine = "closing_line"
         case closingLineValue = "closing_line_value"
     }
-}
-
-struct MatchReferee: Identifiable, Hashable {
-    let heim: String
-    let gast: String
-    let referee: String
-    var id: String { "\(heim)-\(gast)" }
-}
-
-struct TeamExtraFixture: Identifiable, Hashable {
-    let teamName: String
-    let competition: String   // "Champions League", "Europa League", "DFB-Pokal" etc.
-    let opponent: String
-    let date: String          // ISO8601
-    let isHome: Bool
-    var id: String { "\(teamName)-\(competition)-\(date)" }
-}
-
-struct TeamSeasonShots: Identifiable, Hashable {
-    let teamName: String
-    let shotsOnGoalPerGameHome: Double
-    let shotsOnGoalPerGameAway: Double
-    let shotsOnGoalConversionHome: Double  // goals / shots on goal (home)
-    let shotsOnGoalConversionAway: Double  // goals / shots on goal (away)
-    var id: String { teamName }
 }
 
 struct TipGenerationRecord: Codable, Identifiable {

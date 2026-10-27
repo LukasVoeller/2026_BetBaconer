@@ -83,44 +83,21 @@ public struct LearningEngine {
             return quality.contains("hoch") || quality.contains("mittel")
         }.count) / sampleSize
 
-        // Brier Scores (nur fuer Matches mit Markt-Quoten)
-        let brierMatches = evaluated.filter { $0.quoteHome != nil && $0.quoteDraw != nil && $0.quoteAway != nil }
-        let brierScore: Double
-        if brierMatches.isEmpty {
-            brierScore = 0
-        } else {
-            let sum = brierMatches.map { m -> Double in
-                guard let actualOutcome = m.actualOutcome else { return 0 }
-                let oH = actualOutcome == .homeWin ? 1.0 : 0.0
-                let oD = actualOutcome == .draw    ? 1.0 : 0.0
-                let oA = actualOutcome == .awayWin ? 1.0 : 0.0
-                let pH = m.predictedOutcome == .homeWin ? 1.0 : 0.0
-                let pD = m.predictedOutcome == .draw    ? 1.0 : 0.0
-                let pA = m.predictedOutcome == .awayWin ? 1.0 : 0.0
-                return pow(pH - oH, 2) + pow(pD - oD, 2) + pow(pA - oA, 2)
-            }.reduce(0, +)
-            brierScore = sum / Double(brierMatches.count)
+        // Brier Scores: model and market on the same subset, both as probabilities.
+        // Runs without stored model probabilities (pre-v5) are skipped instead of scored as one-hot tips.
+        let brierPairs = evaluated.compactMap { m -> (model: Double, market: Double)? in
+            guard let actualOutcome = m.actualOutcome,
+                  let pH = m.probabilityHomeWin, let pD = m.probabilityDraw, let pA = m.probabilityAwayWin,
+                  let qH = m.quoteHome, let qD = m.quoteDraw, let qA = m.quoteAway,
+                  qH > 0, qD > 0, qA > 0 else { return nil }
+            let inv = 1/qH + 1/qD + 1/qA
+            return (
+                brier(home: pH, draw: pD, away: pA, actual: actualOutcome),
+                brier(home: (1/qH) / inv, draw: (1/qD) / inv, away: (1/qA) / inv, actual: actualOutcome)
+            )
         }
-
-        let marketBrierScore: Double
-        if brierMatches.isEmpty {
-            marketBrierScore = 0
-        } else {
-            let validMatches = brierMatches.compactMap { m -> Double? in
-                guard let qH = m.quoteHome, let qD = m.quoteDraw, let qA = m.quoteAway,
-                      qH > 0, qD > 0, qA > 0,
-                      let actualOutcome = m.actualOutcome else { return nil }
-                let inv = 1/qH + 1/qD + 1/qA
-                let pH = (1/qH) / inv
-                let pD = (1/qD) / inv
-                let pA = (1/qA) / inv
-                let oH = actualOutcome == .homeWin ? 1.0 : 0.0
-                let oD = actualOutcome == .draw    ? 1.0 : 0.0
-                let oA = actualOutcome == .awayWin ? 1.0 : 0.0
-                return pow(pH - oH, 2) + pow(pD - oD, 2) + pow(pA - oA, 2)
-            }
-            marketBrierScore = validMatches.isEmpty ? 0 : validMatches.reduce(0, +) / Double(validMatches.count)
-        }
+        let brierScore = brierPairs.map(\.model).average
+        let marketBrierScore = brierPairs.map(\.market).average
 
         let weights = LearningCorrectionWeights(
             drawBoost: max(0, -drawBias),
@@ -240,6 +217,13 @@ public struct LearningEngine {
             return "{}"
         }
         return json
+    }
+
+    private func brier(home: Double, draw: Double, away: Double, actual: MatchOutcome) -> Double {
+        let oH = actual == .homeWin ? 1.0 : 0.0
+        let oD = actual == .draw ? 1.0 : 0.0
+        let oA = actual == .awayWin ? 1.0 : 0.0
+        return pow(home - oH, 2) + pow(draw - oD, 2) + pow(away - oA, 2)
     }
 
     private func rate(of flags: [Bool]) -> Double {

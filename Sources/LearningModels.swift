@@ -24,6 +24,28 @@ public struct PredictionRun: Codable, Identifiable {
     public let rawResponse: String
     public let seasonIdentifier: String
     public var matches: [MatchPrediction]
+
+    public static let ensembleModelName = "codex-cli-ensemble"
+    public static let manualModelName = "kicktipp-manual"
+
+    /// Kicktipp form state beats the ensemble, which beats single Codex runs; newest wins within a source.
+    var learningPriority: Int {
+        switch modelName {
+        case Self.manualModelName: return 2
+        case Self.ensembleModelName, "legacy-tip-history": return 1
+        default: return 0
+        }
+    }
+
+    static func learningOrder(_ lhs: PredictionRun, _ rhs: PredictionRun) -> Bool {
+        (lhs.learningPriority, lhs.createdAt) < (rhs.learningPriority, rhs.createdAt)
+    }
+}
+
+public struct ScorelineProbability: Codable, Hashable {
+    public let homeGoals: Int
+    public let awayGoals: Int
+    public let probability: Double
 }
 
 public struct MatchPrediction: Codable, Identifiable, Hashable {
@@ -62,6 +84,11 @@ public struct MatchPrediction: Codable, Identifiable, Hashable {
     public let expectedHomeGoals: Double?
     public let expectedAwayGoals: Double?
     public let marketWeightHint: Double?
+    public let probabilityHomeWin: Double?
+    public let probabilityDraw: Double?
+    public let probabilityAwayWin: Double?
+    public let confidence: Double?
+    public let topScorelines: [ScorelineProbability]?
     public var evaluatedClosingLineValue: Double?
 
     public var actualHomeGoals: Int?
@@ -110,6 +137,11 @@ public struct MatchPrediction: Codable, Identifiable, Hashable {
         expectedHomeGoals: Double? = nil,
         expectedAwayGoals: Double? = nil,
         marketWeightHint: Double? = nil,
+        probabilityHomeWin: Double? = nil,
+        probabilityDraw: Double? = nil,
+        probabilityAwayWin: Double? = nil,
+        confidence: Double? = nil,
+        topScorelines: [ScorelineProbability]? = nil,
         evaluatedClosingLineValue: Double? = nil,
         actualHomeGoals: Int?,
         actualAwayGoals: Int?,
@@ -156,6 +188,11 @@ public struct MatchPrediction: Codable, Identifiable, Hashable {
         self.expectedHomeGoals = expectedHomeGoals
         self.expectedAwayGoals = expectedAwayGoals
         self.marketWeightHint = marketWeightHint
+        self.probabilityHomeWin = probabilityHomeWin
+        self.probabilityDraw = probabilityDraw
+        self.probabilityAwayWin = probabilityAwayWin
+        self.confidence = confidence
+        self.topScorelines = topScorelines
         self.evaluatedClosingLineValue = evaluatedClosingLineValue
         self.actualHomeGoals = actualHomeGoals
         self.actualAwayGoals = actualAwayGoals

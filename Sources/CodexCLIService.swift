@@ -5,9 +5,11 @@ struct CodexCommandResult {
     let exitCode: Int32
 }
 
-enum CodexCLIError: LocalizedError {
+enum CodexCLIError: LocalizedError, Equatable {
     case executableNotFound(String)
     case executionFailed(String)
+    case timedOut(TimeInterval)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -15,25 +17,79 @@ enum CodexCLIError: LocalizedError {
             return "Codex CLI nicht gefunden unter: \(path)"
         case let .executionFailed(message):
             return message
+        case let .timedOut(seconds):
+            return "Codex hat nicht innerhalb von \(Int(seconds / 60)) Minuten geantwortet und wurde beendet."
+        case .cancelled:
+            return "Codex-Ausfuehrung wurde abgebrochen."
         }
     }
 }
 
-private final class SynchronizedBuffer: @unchecked Sendable {
+/// Lets the UI terminate a running Codex process.
+final class CodexProcessHandle: @unchecked Sendable {
     private let lock = NSLock()
-    private var value = ""
+    private var process: Process?
+    private var terminatedByUser = false
 
-    func append(_ text: String) {
-        lock.lock()
-        value += text
-        lock.unlock()
+    var wasCancelled: Bool {
+        lock.withLock { terminatedByUser }
+    }
+
+    func attach(_ process: Process) {
+        let cancelledEarly = lock.withLock {
+            self.process = process
+            return terminatedByUser
+        }
+        if cancelledEarly { process.terminate() }
+    }
+
+    func terminate() {
+        let running = lock.withLock {
+            terminatedByUser = true
+            return process
+        }
+        if running?.isRunning == true { running?.terminate() }
+    }
+}
+
+/// Accumulates process output and decodes only complete UTF-8 sequences, so multi-byte
+/// characters split across pipe reads are not dropped.
+private final class OutputCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+    private var pending: [ObjectIdentifier: Data] = [:]
+
+    func append(_ data: Data, from handle: FileHandle) -> String {
+        lock.withLock {
+            let key = ObjectIdentifier(handle)
+            var buffer = pending[key, default: Data()]
+            buffer.append(data)
+            var decoded = ""
+            // A UTF-8 sequence is at most 4 bytes, so at most 3 trailing bytes can be incomplete.
+            for trim in 0...min(3, buffer.count) {
+                if let string = String(data: buffer.dropLast(trim), encoding: .utf8) {
+                    decoded = string
+                    buffer = Data(buffer.suffix(trim))
+                    break
+                }
+            }
+            pending[key] = buffer
+            text += decoded
+            return decoded
+        }
     }
 
     func snapshot() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        return value
+        lock.withLock { text }
     }
+}
+
+private final class TimeoutFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    func fire() { lock.withLock { fired = true } }
+    var didFire: Bool { lock.withLock { fired } }
 }
 
 struct CodexCLIService: Sendable {
@@ -41,6 +97,8 @@ struct CodexCLIService: Sendable {
         executablePath: String,
         arguments: [String],
         standardInput: String? = nil,
+        timeout: TimeInterval,
+        handle: CodexProcessHandle = CodexProcessHandle(),
         onOutput: @escaping @Sendable (String) -> Void
     ) async throws -> CodexCommandResult {
         let expandedPath = NSString(string: executablePath).expandingTildeInPath
@@ -48,67 +106,80 @@ struct CodexCLIService: Sendable {
             throw CodexCLIError.executableNotFound(expandedPath)
         }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            let stdout = Pipe()
-            let stderr = Pipe()
-            let stdin = Pipe()
-            let buffer = SynchronizedBuffer()
+        let timeoutFlag = TimeoutFlag()
+        let result: CodexCommandResult = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let process = Process()
+                let stdout = Pipe()
+                let stderr = Pipe()
+                let stdin = Pipe()
+                let collector = OutputCollector()
 
-            let append: @Sendable (String) -> Void = { text in
-                guard !text.isEmpty else { return }
-                buffer.append(text)
-                onOutput(text)
-            }
-
-            let reader: @Sendable (FileHandle) -> Void = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-                append(text)
-            }
-
-            stdout.fileHandleForReading.readabilityHandler = reader
-            stderr.fileHandleForReading.readabilityHandler = reader
-
-            let launch = Self.buildLaunchConfiguration(for: expandedPath, arguments: arguments)
-            process.executableURL = URL(fileURLWithPath: launch.executable)
-            process.arguments = launch.arguments
-            process.environment = Self.buildEnvironment(extraPATHEntries: launch.pathEntries)
-            process.standardOutput = stdout
-            process.standardError = stderr
-            process.standardInput = stdin
-
-            process.terminationHandler = { process in
-                stdout.fileHandleForReading.readabilityHandler = nil
-                stderr.fileHandleForReading.readabilityHandler = nil
-
-                let remainingStdout = stdout.fileHandleForReading.readDataToEndOfFile()
-                if let text = String(data: remainingStdout, encoding: .utf8), !text.isEmpty {
-                    append(text)
+                let reader: @Sendable (FileHandle) -> Void = { fileHandle in
+                    let data = fileHandle.availableData
+                    guard !data.isEmpty else { return }
+                    let text = collector.append(data, from: fileHandle)
+                    if !text.isEmpty { onOutput(text) }
                 }
 
-                let remainingStderr = stderr.fileHandleForReading.readDataToEndOfFile()
-                if let text = String(data: remainingStderr, encoding: .utf8), !text.isEmpty {
-                    append(text)
-                }
+                stdout.fileHandleForReading.readabilityHandler = reader
+                stderr.fileHandleForReading.readabilityHandler = reader
 
-                continuation.resume(returning: CodexCommandResult(output: buffer.snapshot(), exitCode: process.terminationStatus))
-            }
+                let launch = Self.buildLaunchConfiguration(for: expandedPath, arguments: arguments)
+                process.executableURL = URL(fileURLWithPath: launch.executable)
+                process.arguments = launch.arguments
+                process.environment = Self.buildEnvironment(extraPATHEntries: launch.pathEntries)
+                process.standardOutput = stdout
+                process.standardError = stderr
+                process.standardInput = stdin
 
-            do {
-                try process.run()
-                if let standardInput {
-                    if let data = standardInput.data(using: .utf8) {
-                        stdin.fileHandleForWriting.write(data)
+                process.terminationHandler = { process in
+                    for pipe in [stdout, stderr] {
+                        let readHandle = pipe.fileHandleForReading
+                        readHandle.readabilityHandler = nil
+                        let rest = readHandle.readDataToEndOfFile()
+                        if !rest.isEmpty {
+                            let text = collector.append(rest, from: readHandle)
+                            if !text.isEmpty { onOutput(text) }
+                        }
                     }
+                    continuation.resume(returning: CodexCommandResult(output: collector.snapshot(), exitCode: process.terminationStatus))
                 }
-                try? stdin.fileHandleForWriting.close()
-            } catch {
-                stdout.fileHandleForReading.readabilityHandler = nil
-                stderr.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(throwing: CodexCLIError.executionFailed(error.localizedDescription))
+
+                do {
+                    try process.run()
+                } catch {
+                    stdout.fileHandleForReading.readabilityHandler = nil
+                    stderr.fileHandleForReading.readabilityHandler = nil
+                    continuation.resume(throwing: CodexCLIError.executionFailed(error.localizedDescription))
+                    return
+                }
+                handle.attach(process)
+
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                    guard process.isRunning else { return }
+                    timeoutFlag.fire()
+                    process.terminate()
+                }
+
+                // Writing a large prompt blocks until Codex reads it, so keep it off the cooperative pool.
+                // If Codex exits early the write fails with EPIPE (SIGPIPE is ignored in AppDelegate).
+                let input = standardInput.map { Data($0.utf8) }
+                DispatchQueue.global().async {
+                    let writer = stdin.fileHandleForWriting
+                    if let input {
+                        try? writer.write(contentsOf: input)
+                    }
+                    try? writer.close()
+                }
             }
+        } onCancel: {
+            handle.terminate()
         }
+
+        if handle.wasCancelled { throw CodexCLIError.cancelled }
+        if timeoutFlag.didFire { throw CodexCLIError.timedOut(timeout) }
+        return result
     }
 
     private static func buildLaunchConfiguration(for executablePath: String, arguments: [String]) -> (executable: String, arguments: [String], pathEntries: [String]) {

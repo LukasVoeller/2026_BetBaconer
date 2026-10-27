@@ -20,7 +20,13 @@ struct SofaScoreService {
         var absences: [PlayerAbsence] = []
 
         for event in events {
-            let entries = (try? await fetchMissingPlayers(for: event)) ?? []
+            let entries: [(String, String, String, String)]
+            do {
+                entries = try await fetchMissingPlayers(for: event)
+            } catch {
+                AppLogger.network.error("SofaScore lineups failed for event: \(error.localizedDescription, privacy: .public)")
+                continue
+            }
             for (playerName, teamName, type, reason) in entries {
                 let key = "\(playerName)-\(teamName)"
                 guard !seen.contains(key) else { continue }

@@ -12,6 +12,10 @@ final class AppState {
         static let codexRunCount                = "codexRunCount"
         static let kicktippCompetitionSlug      = "kicktippCompetitionSlug"
         static let codexPath                    = "codexPath"
+        static let kicktippRules                = "kicktippRules"
+        static let kicktippPlayerName           = "kicktippPlayerName"
+        static let useRankingStrategy           = "useRankingStrategy"
+        static let learnedMarketWeight          = "learnedMarketWeight"
     }
 
     private enum SecretKeys {
@@ -50,6 +54,22 @@ final class AppState {
     var codexPath: String = UserDefaults.standard.string(forKey: Keys.codexPath) ?? "/opt/homebrew/bin/codex" {
         didSet { UserDefaults.standard.set(codexPath, forKey: Keys.codexPath) }
     }
+    var kicktippRules: KicktippRules = UserDefaults.standard.data(forKey: Keys.kicktippRules)
+        .flatMap { try? JSONDecoder().decode(KicktippRules.self, from: $0) } ?? .standard {
+        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(kicktippRules), forKey: Keys.kicktippRules) }
+    }
+    /// Own player name in the Kicktipp group, used to locate the ranking position.
+    var kicktippPlayerName: String = UserDefaults.standard.string(forKey: Keys.kicktippPlayerName) ?? "" {
+        didSet { UserDefaults.standard.set(kicktippPlayerName, forKey: Keys.kicktippPlayerName) }
+    }
+    var useRankingStrategy: Bool = UserDefaults.standard.bool(forKey: Keys.useRankingStrategy) {
+        didSet { UserDefaults.standard.set(useRankingStrategy, forKey: Keys.useRankingStrategy) }
+    }
+    /// Share of the bookmaker market in expected goals; learned from the odds archive by the backtest.
+    var learnedMarketWeight: Double = (UserDefaults.standard.object(forKey: Keys.learnedMarketWeight) as? Double) ?? ModelBacktestService.defaultMarketWeight {
+        didSet { UserDefaults.standard.set(learnedMarketWeight, forKey: Keys.learnedMarketWeight) }
+    }
+    var backtestReport = ""
     var generatedPrompt: String = ""
     var importedResponse: String = ""
     var consoleOutput: String = ""
@@ -73,9 +93,6 @@ final class AppState {
     var playerAbsences: [PlayerAbsence] = []
     var teamMetadata: [TeamMetadata] = []
     var matchWeather: [MatchWeather] = []
-    var matchReferees: [MatchReferee] = []
-    var teamExtraFixtures: [TeamExtraFixture] = []
-    var teamShotsStats: [TeamSeasonShots] = []
     var llmMatchEnrichments: [LLMMatchEnrichment] = []
     var matchExpectedGoals: [MatchExpectedGoals] = []
     var nextSpieltag: Int?
@@ -96,7 +113,38 @@ final class AppState {
     var learningState: LearningState = .empty {
         didSet { persistLearningStore() }
     }
+    /// Every odds snapshot the app has seen (latest per match), the basis for learning the market weight.
+    var oddsArchive: [ArchivedOdds] = [] {
+        didSet { persistLearningStore() }
+    }
+    /// Finished matches of earlier seasons (start year -> matches) for the rating model and backtests.
+    private var historicalSeasons: [Int: [FinishedMatch]] = [:]
+    /// Fellow players' tips of finished matchdays, read from the Kicktipp tip overview.
+    var communityMatchdays: [CommunityMatchday] = [] {
+        didSet { persistLearningStore() }
+    }
+    var currentSeasonCommunity: [CommunityMatchday] {
+        communityMatchdays.filter { $0.season == season.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+    var inferredKicktippRules: InferredKicktippRules? {
+        communityService.inferRules(from: currentSeasonCommunity)
+    }
+    var communityBacktest: [CommunityBacktestRow] {
+        communityService.backtest(runs: predictionRuns, matchdays: currentSeasonCommunity, rules: kicktippRules)
+    }
+    var rankingStrategy: RankingStrategy? {
+        let name = kicktippPlayerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let nextSpieltag else { return nil }
+        return communityService.rankingStrategy(playerName: name, matchdays: currentSeasonCommunity, nextSpieltag: nextSpieltag)
+    }
     var isBusy = false
+    /// Kicktipp fields that already hold a different tip and would be overwritten; non-empty asks the UI for confirmation.
+    var pendingKicktippOverwrites: [String] = []
+    private var activeCodexProcess: CodexProcessHandle?
+    /// Set when a store could not be loaded nor backed up; saving would destroy the unreadable file.
+    private var tipHistoryPersistenceDisabled = false
+    private var learningPersistenceDisabled = false
+    private var codexCancelRequested = false
     var errorMessage: String?
     var infoMessage: String?
 
@@ -112,7 +160,19 @@ final class AppState {
     private let teamRatingService = TeamRatingService()
     private let predictionStore = PredictionStore()
     private let predictionEvaluator = PredictionEvaluator()
-    private let ensembleService = EnsembleService()
+    private let communityService = KicktippCommunityService()
+    private var ensembleService: EnsembleService {
+        var service = EnsembleService(rules: kicktippRules)
+        let community = currentSeasonCommunity
+        if !community.isEmpty {
+            service.crowdTipHomeFavorite = communityService.typicalCrowdTip(homeFavored: true, matchdays: community)
+            service.crowdTipAwayFavorite = communityService.typicalCrowdTip(homeFavored: false, matchdays: community)
+        }
+        if useRankingStrategy {
+            service.strategy = rankingStrategy
+        }
+        return service
+    }
     private let codexCLIService = CodexCLIService()
     private let secretStore = KeychainSecretStore()
     private let tipHistoryStore = TipHistoryStore()
@@ -122,6 +182,9 @@ final class AppState {
     }
 
     // MARK: - Init
+
+    /// Bump whenever tip selection changes, so backtesting stays separated per model version.
+    static let promptVersion = "rating-market-ev-kicktipp-v6"
 
     static func currentBundesligaSeason(for date: Date = Date()) -> Int {
         let year = Calendar.current.component(.year, from: date)
@@ -150,7 +213,7 @@ final class AppState {
         Dictionary(grouping: runs.filter { $0.matches.contains(where: \.isEvaluated) }) {
             "\($0.seasonIdentifier)|\($0.spieltag)"
         }
-        .compactMap { _, runs in runs.max { $0.createdAt < $1.createdAt } }
+        .compactMap { _, runs in runs.max(by: PredictionRun.learningOrder) }
         .sorted { ($0.seasonIdentifier, $0.spieltag) > ($1.seasonIdentifier, $1.spieltag) }
     }
 
@@ -177,7 +240,7 @@ final class AppState {
 
         guard let previousRun = previousRuns
             .filter({
-                $0.modelName == "codex-cli-ensemble"
+                $0.modelName == PredictionRun.ensembleModelName
                     && $0.seasonIdentifier == seasonIdentifier
                     && $0.spieltag == spieltag
                     && !$0.matches.contains(where: \.isEvaluated)
@@ -271,15 +334,23 @@ final class AppState {
             }
         } catch {
             errorMessage = error.localizedDescription
+            if case .failedToLoad(backup: nil)? = error as? TipHistoryStoreError {
+                tipHistoryPersistenceDisabled = true
+            }
         }
 
         do {
             let loaded = try predictionStore.load()
             predictionRuns = loaded.runs
             learningState = loaded.learningState
+            communityMatchdays = loaded.community
+            oddsArchive = loaded.oddsArchive
             restoreUpcomingMatchesFromLatestTips()
         } catch {
             errorMessage = error.localizedDescription
+            if case .failedToLoad(backup: nil)? = error as? PredictionStoreError {
+                learningPersistenceDisabled = true
+            }
         }
     }
 
@@ -298,6 +369,7 @@ final class AppState {
         guard !isBusy else { return }
 
         isBusy = true
+        codexCancelRequested = false
         errorMessage = nil
         defer { isBusy = false }
 
@@ -316,6 +388,7 @@ final class AppState {
             guard !upcoming.isEmpty else {
                 throw ValidationError.noUpcomingMatches
             }
+            await loadHistoricalSeasons(before: seasonValue, count: 2)
 
             infoMessage = "Lese Wettquoten..."
             bettingOdds = []
@@ -359,6 +432,7 @@ final class AppState {
             }
 
             validateWorkflowInputs(upcomingMatches: upcoming)
+            archiveCurrentOdds(season: String(seasonValue))
 
             infoMessage = "Lade Team- und Stadiondaten..."
             do {
@@ -379,10 +453,6 @@ final class AppState {
                 playerAbsences = []
             }
 
-            matchReferees = []
-            teamExtraFixtures = []
-            teamShotsStats = []
-
             infoMessage = "Lade Wetterdaten..."
             do {
                 matchWeather = try await weatherService.fetchWeather(for: upcomingMatches, teamMetadata: teamMetadata)
@@ -390,6 +460,17 @@ final class AppState {
             } catch {
                 appendConsole("[Open-Meteo] Fehler: \(error.localizedDescription)\n")
                 matchWeather = []
+            }
+
+            if !kicktippCompetitionSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                infoMessage = "Lese Tipps und Quoten vergangener Spieltage..."
+                await syncCommunityTips(seasonValue: seasonValue)
+                await backfillKicktippOdds(seasonValue: seasonValue)
+                do {
+                    try await ensureKicktippMatchdayReadyForExtraction()
+                } catch {
+                    appendConsole("[Mitspieler] Zurueck zur Tippabgabe fehlgeschlagen: \(error.localizedDescription)\n")
+                }
             }
 
             infoMessage = "Recherchiere fehlende Zusatzdaten..."
@@ -407,12 +488,15 @@ final class AppState {
                 playerAbsences: playerAbsences,
                 teamMetadata: teamMetadata,
                 matchWeather: matchWeather,
-                matchReferees: matchReferees,
-                teamExtraFixtures: teamExtraFixtures,
-                teamShotsStats: teamShotsStats,
                 llmMatchEnrichments: llmMatchEnrichments,
                 tipHistory: tipHistory,
-                learningState: learningState
+                learningState: learningState,
+                communitySummary: communityService.promptSummary(
+                    matchdays: currentSeasonCommunity,
+                    rules: kicktippRules,
+                    backtest: communityBacktest,
+                    strategy: useRankingStrategy ? rankingStrategy : nil
+                )
             )
 
             guard !generatedPrompt.isEmpty else { return }
@@ -429,6 +513,10 @@ final class AppState {
     }
 
     func importTipsFromResponse() {
+        importTipsFromResponse(probabilityModels: [:])
+    }
+
+    private func importTipsFromResponse(probabilityModels: [String: EnsembleService.MatchProbabilityModel]) {
         errorMessage = nil
         do {
             let tips = try tipWorkflowService.parseTips(from: importedResponse, upcomingMatches: upcomingMatches)
@@ -439,7 +527,7 @@ final class AppState {
                 appendConsole("[Verlauf] Kicktipp-Namen: \(bettingOdds.map { "\($0.heim) vs \($0.gast)" }.joined(separator: ", "))\n")
                 tipHistory.append(TipGenerationRecord(id: UUID(), timestamp: Date(), spieltag: spieltag, tips: tips, odds: storedOdds))
             }
-            recordPredictionRun(tips: tips, rawPrompt: generatedPrompt, rawResponse: importedResponse)
+            recordPredictionRun(tips: tips, rawPrompt: generatedPrompt, rawResponse: importedResponse, probabilityModels: probabilityModels)
             infoMessage = "Tipps importiert."
         } catch {
             errorMessage = error.localizedDescription
@@ -489,6 +577,169 @@ final class AppState {
         }
     }
 
+    func loadCommunityTips() async {
+        await perform {
+            let seasonValue = try self.parsedSeason()
+            if self.finishedResults.isEmpty {
+                self.finishedResults = try await self.ligaService.fetchFinishedMatches(season: seasonValue)
+            }
+            await self.syncCommunityTips(seasonValue: seasonValue)
+            await self.backfillKicktippOdds(seasonValue: seasonValue)
+            try await self.ensureKicktippMatchdayReadyForExtraction()
+            self.infoMessage = "\(self.currentSeasonCommunity.count) Spieltage mit Mitspieler-Tipps, \(self.oddsArchive.count) archivierte Quoten."
+        }
+    }
+
+    /// Walk-forward backtest over the last seasons; learns the market weight once the odds archive is large enough.
+    func runModelBacktest() async {
+        await perform {
+            let seasonValue = try self.parsedSeason()
+            self.infoMessage = "Lade Saisons fuer den Backtest..."
+            await self.loadHistoricalSeasons(before: seasonValue, count: 6)
+            var seasons = self.historicalSeasons
+            seasons[seasonValue] = self.finishedResults.isEmpty
+                ? try await self.ligaService.fetchFinishedMatches(season: seasonValue)
+                : self.finishedResults
+            let backtest = ModelBacktestService(rules: self.kicktippRules)
+            let archive = self.oddsArchive
+            self.infoMessage = "Backtest laeuft..."
+            let report = await Task.detached(priority: .userInitiated) {
+                backtest.run(seasons: seasons, oddsArchive: archive, evaluatedSeasons: (seasonValue - 4)...seasonValue)
+            }.value
+            if let best = report.bestMarketWeight {
+                self.learnedMarketWeight = best
+            }
+            self.backtestReport = report.summary
+            self.appendConsole("[Backtest]\n\(report.summary)\n")
+            self.infoMessage = "Backtest abgeschlossen."
+        }
+    }
+
+    private func loadHistoricalSeasons(before seasonValue: Int, count: Int) async {
+        for year in (seasonValue - count)..<seasonValue where historicalSeasons[year] == nil {
+            do {
+                historicalSeasons[year] = try await ligaService.fetchFinishedMatches(season: year)
+            } catch {
+                appendConsole("[OpenLigaDB] Saison \(year) nicht geladen: \(error.localizedDescription)\n")
+            }
+        }
+    }
+
+    /// Keeps the latest odds per match; the snapshot closest to kickoff wins.
+    private func archiveCurrentOdds(season: String) {
+        let overUnderByKey = Dictionary(overUnderOdds.map { (normalizedTeamKey($0.heim, $0.gast), $0) }, uniquingKeysWith: { first, _ in first })
+        let snapshots = upcomingMatches.compactMap { match -> ArchivedOdds? in
+            let key = normalizedTeamKey(match.heim, match.gast)
+            guard let odds = bettingOdds.first(where: { normalizedTeamKey($0.heim, $0.gast) == key }) else { return nil }
+            let overUnder = overUnderByKey[key]
+            return ArchivedOdds(
+                season: season, spieltag: match.spieltag, heim: match.heim, gast: match.gast,
+                quoteHeim: odds.quoteHeim, quoteUnentschieden: odds.quoteUnentschieden, quoteGast: odds.quoteGast,
+                overUnderLine: overUnder?.line, overQuote: overUnder?.overQuote, underQuote: overUnder?.underQuote,
+                capturedAt: Date()
+            )
+        }
+        mergeIntoOddsArchive(snapshots)
+    }
+
+    private func mergeIntoOddsArchive(_ snapshots: [ArchivedOdds]) {
+        guard !snapshots.isEmpty else { return }
+        let replaced = Set(snapshots.map { "\($0.season)|\($0.spieltag)|\(normalizedTeamKey($0.heim, $0.gast))" })
+        oddsArchive = oddsArchive.filter { !replaced.contains("\($0.season)|\($0.spieltag)|\(normalizedTeamKey($0.heim, $0.gast))") } + snapshots
+    }
+
+    /// Reads the odds Kicktipp shows on the tip page of finished matchdays that are not archived yet.
+    private func backfillKicktippOdds(seasonValue: Int) async {
+        let seasonKey = String(seasonValue)
+        let archived = Set(oddsArchive.filter { $0.season == seasonKey }.map(\.spieltag))
+        let missing = Set(finishedResults.map(\.spieltag))
+            .filter { matchday in !archived.contains(matchday) && (nextSpieltag.map { matchday < $0 } ?? true) }
+            .sorted()
+        var stored = 0
+        for spieltag in missing {
+            do {
+                try kicktippAutomation.loadTippabgabe(for: kicktippCompetitionSlug, spieltag: spieltag)
+                try await waitForKicktippPageToFinishLoading(urlContaining: "spieltagIndex=\(spieltag)")
+            } catch {
+                appendConsole("[Quoten-Archiv] Spieltag \(spieltag) nicht geladen: \(error.localizedDescription)\n")
+                break
+            }
+            let extracted = await kicktippAutomation.extractOddsFromPage()
+            let results = finishedResults.filter { $0.spieltag == spieltag }
+            let snapshots = extracted.odds.compactMap { odds -> ArchivedOdds? in
+                guard let match = results.first(where: { matchesLikelyEqual($0.heim, $0.gast, odds.heim, odds.gast) }) else { return nil }
+                return ArchivedOdds(
+                    season: seasonKey, spieltag: spieltag, heim: match.heim, gast: match.gast,
+                    quoteHeim: odds.quoteHeim, quoteUnentschieden: odds.quoteUnentschieden, quoteGast: odds.quoteGast,
+                    overUnderLine: nil, overQuote: nil, underQuote: nil,
+                    capturedAt: parseKickoffDate(match.datum) ?? Date()
+                )
+            }
+            if snapshots.isEmpty {
+                appendConsole("[Quoten-Archiv] Kicktipp zeigt fuer Spieltag \(spieltag) keine Quoten; Nachladen beendet.\n\(extracted.log)")
+                break
+            }
+            mergeIntoOddsArchive(snapshots)
+            stored += snapshots.count
+        }
+        if stored > 0 {
+            appendConsole("[Quoten-Archiv] \(stored) historische Quoten aus Kicktipp gespeichert (gesamt \(oddsArchive.count)).\n")
+        }
+    }
+
+    func adoptInferredKicktippRules() {
+        guard let inferred = inferredKicktippRules else { return }
+        kicktippRules = inferred.rules
+        infoMessage = "Punkteregel aus den Mitspieler-Tipps uebernommen."
+    }
+
+    /// Reads the tip overview of every finished matchday that is missing, plus the latest one (totals change).
+    /// Failures are logged and never abort the tip workflow.
+    private func syncCommunityTips(seasonValue: Int) async {
+        let seasonKey = String(seasonValue)
+        let slug = kicktippCompetitionSlug
+        let finishedMatchdays = Set(finishedResults.map(\.spieltag)).filter { matchday in
+            nextSpieltag.map { matchday < $0 } ?? true
+        }
+        let stored = Set(communityMatchdays.filter { $0.season == seasonKey }.map(\.spieltag))
+        let latest = finishedMatchdays.max()
+        let toLoad = finishedMatchdays.filter { !stored.contains($0) || $0 == latest }.sorted()
+        guard !toLoad.isEmpty else { return }
+
+        var loaded: [CommunityMatchday] = []
+        for spieltag in toLoad {
+            do {
+                try kicktippAutomation.loadCommunityOverview(for: slug, spieltag: spieltag)
+                try await waitForKicktippPageToFinishLoading(urlContaining: "spieltagIndex=\(spieltag)")
+                let extracted = try await kicktippAutomation.extractCommunityTable()
+                do {
+                    loaded.append(try communityService.parse(table: extracted.table, season: seasonKey, spieltag: spieltag, finishedMatches: finishedResults))
+                } catch {
+                    appendConsole("\n[AUTO-LOG] Kicktipp-Tippuebersicht Spieltag \(spieltag):\n\(extracted.raw.prefix(3000))\n")
+                    throw error
+                }
+            } catch {
+                appendConsole("[Mitspieler] Spieltag \(spieltag) nicht gelesen: \(error.localizedDescription)\n")
+                break
+            }
+        }
+        guard !loaded.isEmpty else { return }
+
+        let replaced = Set(loaded.map(\.spieltag))
+        communityMatchdays = communityMatchdays.filter { $0.season != seasonKey || !replaced.contains($0.spieltag) } + loaded
+        appendConsole("[Mitspieler] \(loaded.count) Spieltag(e) gelesen, \(currentSeasonCommunity.count) gespeichert.\n")
+
+        if let inferred = inferredKicktippRules, inferred.rules != kicktippRules {
+            let rules = inferred.rules
+            appendConsole(String(
+                format: "[Mitspieler] Erkannte Punkteregel %.0f/%.0f/%.0f, Remis-Tordifferenz %@ (aus %d Tipps) weicht von den Einstellungen ab.\n",
+                rules.exactScorePoints, rules.goalDifferencePoints, rules.tendencyPoints,
+                rules.drawCountsAsGoalDifference ? "ja" : "nein", inferred.sampleCount
+            ))
+            infoMessage = "Punkteregel der Tipprunde weicht von den Einstellungen ab, siehe Einstellungen."
+        }
+    }
+
     func resetLearningData() {
         predictionRuns = []
         learningState = .empty
@@ -525,7 +776,8 @@ final class AppState {
         }
     }
 
-    func applyTipsToKicktipp() async {
+    func applyTipsToKicktipp(confirmOverwrite: Bool = false) async {
+        pendingKicktippOverwrites = []
         await perform {
             guard !self.suggestedTips.isEmpty else {
                 throw KicktippAutomationError.javaScriptError("Bitte zuerst Tipps importieren oder per Codex erzeugen.")
@@ -533,9 +785,47 @@ final class AppState {
             let fields = try await self.kicktippAutomation.extractMatchFields()
             self.kicktippMatchFields = fields
             let updates = try self.buildKicktippUpdates(from: fields)
+
+            let overwrites = Self.kicktippOverwrites(updates)
+            if !overwrites.isEmpty && !confirmOverwrite {
+                self.pendingKicktippOverwrites = overwrites
+                return
+            }
+
             try await self.kicktippAutomation.applyTips(updates)
+
+            let readBack = try await self.kicktippAutomation.extractMatchFields()
+            self.kicktippMatchFields = readBack
+            let mismatches = Self.kicktippMismatches(expected: updates.map(\.tip), fields: readBack)
+            guard mismatches.isEmpty else {
+                throw KicktippAutomationError.javaScriptError("Kicktipp-Felder enthalten nach dem Eintragen abweichende Werte: \(mismatches.joined(separator: ", "))")
+            }
             self.kicktippStatus = "Tipps in Formular eingetragen"
-            self.infoMessage = "Die importierten Tipps wurden in die Kicktipp-Felder eingetragen. Zum Absenden jetzt 'Tipps an Kicktipp senden' nutzen."
+            self.infoMessage = "\(updates.count) Tipps eingetragen und geprueft. Zum Absenden 'Tipps absenden' nutzen."
+        }
+    }
+
+    /// Fields that already hold a different, non-empty tip.
+    nonisolated static func kicktippOverwrites(_ updates: [(field: KicktippMatchField, tip: SuggestedTip)]) -> [String] {
+        updates.compactMap { update in
+            let home = update.field.existingHeim.trimmingCharacters(in: .whitespaces)
+            let away = update.field.existingGast.trimmingCharacters(in: .whitespaces)
+            guard !home.isEmpty || !away.isEmpty,
+                  home != String(update.tip.toreHeim) || away != String(update.tip.toreGast) else {
+                return nil
+            }
+            return "\(update.tip.heim) vs. \(update.tip.gast): \(home):\(away) -> \(update.tip.toreHeim):\(update.tip.toreGast)"
+        }
+    }
+
+    /// Tips whose Kicktipp field values differ from the expected score.
+    nonisolated static func kicktippMismatches(expected tips: [SuggestedTip], fields: [KicktippMatchField]) -> [String] {
+        tips.compactMap { tip in
+            guard let field = fields.first(where: { matchesLikelyEqual($0.heim, $0.gast, tip.heim, tip.gast) }) else {
+                return "\(tip.heim) vs. \(tip.gast) fehlt"
+            }
+            let value = "\(field.existingHeim.trimmingCharacters(in: .whitespaces)):\(field.existingGast.trimmingCharacters(in: .whitespaces))"
+            return value == "\(tip.toreHeim):\(tip.toreGast)" ? nil : "\(tip.heim) vs. \(tip.gast) (\(value))"
         }
     }
 
@@ -543,6 +833,10 @@ final class AppState {
         await perform {
             let fields = try await self.kicktippAutomation.extractMatchFields()
             self.kicktippMatchFields = fields
+            let deviations = Self.kicktippMismatches(expected: self.suggestedTips, fields: fields)
+            if !deviations.isEmpty {
+                self.appendConsole("[Kicktipp] Formular weicht von importierten Tipps ab: \(deviations.joined(separator: ", "))\n")
+            }
             self.syncManualKicktippTipsForLearning(from: fields)
             try await self.kicktippAutomation.submitTips()
             self.kicktippStatus = "Tipps abgesendet"
@@ -562,7 +856,7 @@ final class AppState {
                 .appendingPathComponent("betbaconer-season-questions-\(UUID().uuidString).json")
             defer { try? FileManager.default.removeItem(at: outputFile) }
 
-            let arguments = ["exec", "--skip-git-repo-check", "--output-last-message", outputFile.path, "-"]
+            let arguments = Self.codexExecArguments(outputFile: outputFile)
             let result = try await self.executeCodexCommand(arguments: arguments, standardInput: prompt) { chunk in
                 self.appendConsole(self.stripANSI(chunk))
             }
@@ -582,7 +876,7 @@ final class AppState {
     // MARK: - Codex
 
     func checkCodexLoginStatus() async {
-        await runCodexCommand(arguments: ["login", "status"], userFacingAction: "Codex-Status geprueft") { result in
+        await runCodexCommand(arguments: ["login", "status"], timeout: 60, userFacingAction: "Codex-Status geprueft") { result in
             self.codexStatus = result.exitCode == 0 ? "Angemeldet" : "Nicht angemeldet"
         } onChunk: { chunk in
             self.appendConsole(self.stripANSI(chunk))
@@ -626,19 +920,6 @@ final class AppState {
         infoMessage = "Device-Code in die Zwischenablage kopiert."
     }
 
-    func runPromptWithCodex() async {
-        guard !generatedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            errorMessage = "Bitte zuerst einen Prompt erzeugen."
-            return
-        }
-        // If already busy (e.g. invoked mid-workflow), run the ensemble directly.
-        if isBusy {
-            do { try await runPromptEnsembleWithCodex() } catch { errorMessage = error.localizedDescription }
-            return
-        }
-        await perform { try await self.runPromptEnsembleWithCodex() }
-    }
-
     func copyPromptToClipboard() {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -676,13 +957,22 @@ final class AppState {
     // MARK: - Private
 
     private func buildKicktippUpdates(from fields: [KicktippMatchField]) throws -> [(field: KicktippMatchField, tip: SuggestedTip)] {
+        let tipMatchdays = Set(suggestedTips.map(\.spieltag))
+        guard tipMatchdays.count == 1, let tipMatchday = tipMatchdays.first else {
+            throw KicktippAutomationError.javaScriptError("Die importierten Tipps gehoeren zu mehreren Spieltagen.")
+        }
+        if let nextSpieltag, nextSpieltag != tipMatchday {
+            throw KicktippAutomationError.javaScriptError("Die Tipps gehoeren zu Spieltag \(tipMatchday), offen ist Spieltag \(nextSpieltag). Bitte neu generieren.")
+        }
+
         var updates: [(field: KicktippMatchField, tip: SuggestedTip)] = []
         var matchedTipIDs = Set<SuggestedTip.ID>()
 
         for field in fields {
-            guard let tip = suggestedTips.first(where: {
-                normalizedTeamKey($0.heim, $0.gast) == normalizedTeamKey(field.heim, field.gast)
-            }) else {
+            let fieldKey = normalizedTeamKey(field.heim, field.gast)
+            guard let tip = suggestedTips.first(where: { normalizedTeamKey($0.heim, $0.gast) == fieldKey })
+                ?? suggestedTips.first(where: { matchesLikelyEqual($0.heim, $0.gast, field.heim, field.gast) }),
+                  !matchedTipIDs.contains(tip.id) else {
                 continue
             }
             updates.append((field: field, tip: tip))
@@ -710,11 +1000,22 @@ final class AppState {
         nextSpieltag = upcomingMatches.map(\.spieltag).min()
     }
 
+    /// Model probabilities of the newest ensemble run for this match (manual and single Codex runs carry none).
+    func latestEnsemblePrediction(for tip: SuggestedTip) -> MatchPrediction? {
+        let key = normalizedTeamKey(tip.heim, tip.gast)
+        return predictionRuns
+            .filter { $0.modelName == PredictionRun.ensembleModelName && $0.spieltag == tip.spieltag }
+            .max { $0.createdAt < $1.createdAt }?
+            .matches
+            .first { normalizedTeamKey($0.heim, $0.gast) == key }
+    }
+
     func orderedTips(_ tips: [SuggestedTip]) -> [SuggestedTip] {
         guard !tips.isEmpty, !kicktippMatchFields.isEmpty else { return tips }
 
         let tipsByMatchKey = Dictionary(
-            uniqueKeysWithValues: tips.map { (normalizedTeamKey($0.heim, $0.gast), $0) }
+            tips.map { (normalizedTeamKey($0.heim, $0.gast), $0) },
+            uniquingKeysWith: { first, _ in first }
         )
 
         let orderedMatches = kicktippMatchFields.compactMap { field in
@@ -917,188 +1218,81 @@ final class AppState {
         }
     }
 
+    /// Rating model over the current and two previous seasons (parameters from the walk-forward grid search).
+    private func fittedRatingModel() -> TeamRatingModel? {
+        guard let seasonValue = Int(season) else { return nil }
+        let previousTeams = Set((historicalSeasons[seasonValue - 1] ?? []).flatMap { [normalizeTeamName($0.heim), normalizeTeamName($0.gast)] })
+        let currentTeams = Set((finishedResults.map { ($0.heim, $0.gast) } + upcomingMatches.map { ($0.heim, $0.gast) })
+            .flatMap { [normalizeTeamName($0.0), normalizeTeamName($0.1)] })
+        var counts: [String: Int] = [:]
+        for match in finishedResults {
+            counts[normalizeTeamName(match.heim), default: 0] += 1
+            counts[normalizeTeamName(match.gast), default: 0] += 1
+        }
+        let history = (historicalSeasons[seasonValue - 2] ?? []) + (historicalSeasons[seasonValue - 1] ?? [])
+        return teamRatingService.fit(
+            matches: history + finishedResults,
+            promotedTeams: previousTeams.isEmpty ? [] : currentTeams.subtracting(previousTeams),
+            currentSeasonMatchCounts: counts,
+            referenceDate: upcomingMatches.compactMap { parseKickoffDate($0.datum) }.min()
+        )
+    }
+
+    /// Expected goals per match: team ratings blended (in log space) with the bookmaker market,
+    /// then small, confidence-weighted LLM news adjustments. Absence and rest factors only apply
+    /// without market odds, because the market already prices them in.
     private func expectedGoalsByMatch() -> [String: MatchExpectedGoals] {
-        let ratingModel = teamRatingService.fit(finishedResults: finishedResults)
+        let ratingModel = fittedRatingModel()
         let oddsByKey = ensembleService.remappedOdds(bettingOdds: bettingOdds, upcomingMatches: upcomingMatches)
         let overUnderByKey = Dictionary(overUnderOdds.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
         }, uniquingKeysWith: { first, _ in first })
-        let bttsByKey = Dictionary(bttsOdds.map {
-            (normalizedTeamKey($0.heim, $0.gast), $0)
-        }, uniquingKeysWith: { first, _ in first })
-        let handicapByKey = Dictionary(handicapOdds.map {
-            (normalizedTeamKey($0.heim, $0.gast), $0)
-        }, uniquingKeysWith: { first, _ in first })
         let restDays = buildRestDaysByTeam()
         let absencesByTeam = Dictionary(grouping: playerAbsences) { normalizeTeamName($0.teamName) }
-        let extrasByTeam = Dictionary(grouping: teamExtraFixtures) { normalizeTeamName($0.teamName) }
-        let shotsByTeam = Dictionary(teamShotsStats.map { (normalizeTeamName($0.teamName), $0) }, uniquingKeysWith: { first, _ in first })
-        let weatherByMatch = Dictionary(matchWeather.map {
-            (normalizedTeamKey($0.heim, $0.gast), $0)
-        }, uniquingKeysWith: { first, _ in first })
         let enrichmentByMatch = Dictionary(llmMatchEnrichments.map {
             (normalizedTeamKey($0.heim, $0.gast), $0)
         }, uniquingKeysWith: { first, _ in first })
 
         return Dictionary(upcomingMatches.map { match in
-            let homeStats = teamPerformance(for: match.heim)
-            let awayStats = teamPerformance(for: match.gast)
-            let homeMatchCount = finishedResults.filter { $0.heim == match.heim || $0.gast == match.heim }.count
-            let awayMatchCount = finishedResults.filter { $0.heim == match.gast || $0.gast == match.gast }.count
-            let homeVenueMatchCount = finishedResults.filter { $0.heim == match.heim }.count
-            let awayVenueMatchCount = finishedResults.filter { $0.gast == match.gast }.count
-            let shrunkHomeStats = (
-                goalsPerGame: shrunkRate(homeStats.goalsPerGame, sampleCount: homeMatchCount, prior: 1.45),
-                concededPerGame: shrunkRate(homeStats.concededPerGame, sampleCount: homeMatchCount, prior: 1.45)
-            )
-            let shrunkAwayStats = (
-                goalsPerGame: shrunkRate(awayStats.goalsPerGame, sampleCount: awayMatchCount, prior: 1.45),
-                concededPerGame: shrunkRate(awayStats.concededPerGame, sampleCount: awayMatchCount, prior: 1.45)
-            )
-            let homeVenueRaw = venuePerformance(for: match.heim, isHome: true)
-            let awayVenueRaw = venuePerformance(for: match.gast, isHome: false)
-            let homeVenue = (
-                goalsPerGame: shrunkRate(homeVenueRaw.goalsPerGame, sampleCount: homeVenueMatchCount, prior: 1.55),
-                concededPerGame: shrunkRate(homeVenueRaw.concededPerGame, sampleCount: homeVenueMatchCount, prior: 1.35)
-            )
-            let awayVenue = (
-                goalsPerGame: shrunkRate(awayVenueRaw.goalsPerGame, sampleCount: awayVenueMatchCount, prior: 1.35),
-                concededPerGame: shrunkRate(awayVenueRaw.concededPerGame, sampleCount: awayVenueMatchCount, prior: 1.55)
-            )
-            let homeAttack = blended(shrunkHomeStats.goalsPerGame, homeVenue.goalsPerGame, venueWeight: 0.3)
-            let awayAttack = blended(shrunkAwayStats.goalsPerGame, awayVenue.goalsPerGame, venueWeight: 0.3)
-            let homeDefense = blended(shrunkHomeStats.concededPerGame, homeVenue.concededPerGame, venueWeight: 0.3)
-            let awayDefense = blended(shrunkAwayStats.concededPerGame, awayVenue.concededPerGame, venueWeight: 0.3)
-            var homeXG = 1.45 * (homeAttack / 1.45) * (awayDefense / 1.45) * 1.25
-            var awayXG = 1.45 * (awayAttack / 1.45) * (homeDefense / 1.45)
-            if let ratingXG = ratingModel?.expectedGoals(homeTeam: match.heim, awayTeam: match.gast) {
-                homeXG = ratingXG.home * 0.75 + homeXG * 0.25
-                awayXG = ratingXG.away * 0.75 + awayXG * 0.25
-            }
-
-            if let shots = shotsByTeam[normalizeTeamName(match.heim)] {
-                homeXG = homeXG * 0.75 + shots.shotsOnGoalPerGameHome * shots.shotsOnGoalConversionHome * 0.25
-            }
-            if let shots = shotsByTeam[normalizeTeamName(match.gast)] {
-                awayXG = awayXG * 0.75 + shots.shotsOnGoalPerGameAway * shots.shotsOnGoalConversionAway * 0.25
-            }
-
-            let homeAbsenceImpact = absenceImpact(absencesByTeam[normalizeTeamName(match.heim)] ?? [])
-            let awayAbsenceImpact = absenceImpact(absencesByTeam[normalizeTeamName(match.gast)] ?? [])
-            homeXG *= 1 - homeAbsenceImpact.attack
-            awayXG *= 1 - awayAbsenceImpact.attack
-            homeXG *= 1 + awayAbsenceImpact.defense
-            awayXG *= 1 + homeAbsenceImpact.defense
-
-            homeXG *= restFactor(restDays[normalizeTeamName(match.heim)])
-            awayXG *= restFactor(restDays[normalizeTeamName(match.gast)])
-            homeXG *= extraFixtureFactor(extrasByTeam[normalizeTeamName(match.heim)] ?? [])
-            awayXG *= extraFixtureFactor(extrasByTeam[normalizeTeamName(match.gast)] ?? [])
-
-            if let weather = weatherByMatch[normalizedTeamKey(match.heim, match.gast)] {
-                let factor = weatherGoalFactor(weather)
-                homeXG *= factor
-                awayXG *= factor
-            }
-
             let matchKey = normalizedTeamKey(match.heim, match.gast)
+            let rating = ratingModel?.expectedGoals(homeTeam: match.heim, awayTeam: match.gast) ?? (home: 1.6, away: 1.25)
+            var homeXG = rating.home
+            var awayXG = rating.away
+            let enrichment = enrichmentByMatch[matchKey]
+            let confidence = min(max(enrichment?.confidence ?? 0, 0), 1)
+            let marketWeightHint = (enrichment?.marketWeightHint ?? 0) * confidence
+
+            let overUnderTotal = overUnderByKey[matchKey].flatMap {
+                MarketModel.totalGoals(line: $0.line, overQuote: $0.overQuote, underQuote: $0.underQuote)
+            }
+            if let odds = oddsByKey[matchKey], let market = MarketModel.expectedGoals(odds: odds, total: overUnderTotal) {
+                let weight = min(max(learnedMarketWeight + marketWeightHint, 0.3), 0.95)
+                (homeXG, awayXG) = ModelBacktestService.blend(rating: (homeXG, awayXG), market: market, marketWeight: weight)
+            } else {
+                let homeAbsenceImpact = absenceImpact(absencesByTeam[normalizeTeamName(match.heim)] ?? [])
+                let awayAbsenceImpact = absenceImpact(absencesByTeam[normalizeTeamName(match.gast)] ?? [])
+                homeXG *= (1 - homeAbsenceImpact.attack) * (1 + awayAbsenceImpact.defense) * restFactor(restDays[normalizeTeamName(match.heim)])
+                awayXG *= (1 - awayAbsenceImpact.attack) * (1 + homeAbsenceImpact.defense) * restFactor(restDays[normalizeTeamName(match.gast)])
+            }
+
             var drawCalibration = 0.0
-            var marketWeightHint = 0.0
-            if let enrichment = enrichmentByMatch[matchKey] {
-                let confidence = min(max(enrichment.confidence, 0), 1)
-                let weight = learnedLLMSignalWeight() * confidence
-                homeXG *= 1 + (enrichment.homeAttackAdjustment + enrichment.awayDefenseAdjustment) * weight
-                awayXG *= 1 + (enrichment.awayAttackAdjustment + enrichment.homeDefenseAdjustment) * weight
-                homeXG *= 1 + (enrichment.lineupImpact + enrichment.playerValueImpact + enrichment.sharpMarketDelta + enrichment.closingLineValue) * weight
-                awayXG *= 1 - (enrichment.lineupImpact + enrichment.playerValueImpact + enrichment.sharpMarketDelta + enrichment.closingLineValue) * weight
+            if let enrichment {
+                let weight = learnedLLMSignalWeight() * confidence * 0.5
+                homeXG *= 1 + (enrichment.homeAttackAdjustment + enrichment.awayDefenseAdjustment + enrichment.lineupImpact + enrichment.playerValueImpact) * weight
+                awayXG *= 1 + (enrichment.awayAttackAdjustment + enrichment.homeDefenseAdjustment - enrichment.lineupImpact - enrichment.playerValueImpact) * weight
                 if enrichment.totalGoalsAdjustment != 0 {
-                    (homeXG, awayXG) = scaleTotal(
-                        homeXG: homeXG,
-                        awayXG: awayXG,
-                        targetTotal: max(0.8, homeXG + awayXG + enrichment.totalGoalsAdjustment * weight),
-                        weight: weight
-                    )
-                }
-                if enrichment.historicalGoalBaseline > 0 {
-                    (homeXG, awayXG) = scaleTotal(
-                        homeXG: homeXG,
-                        awayXG: awayXG,
-                        targetTotal: enrichment.historicalGoalBaseline,
-                        weight: 0.25 * confidence
-                    )
+                    (homeXG, awayXG) = scaleTotal(homeXG: homeXG, awayXG: awayXG, targetTotal: max(0.8, homeXG + awayXG + enrichment.totalGoalsAdjustment * weight), weight: 1)
                 }
                 drawCalibration = enrichment.scorelineDrawCalibration * confidence
-                marketWeightHint = enrichment.marketWeightHint * confidence
-            }
-
-            if let overUnder = overUnderByKey[matchKey],
-               let over = parseQuote(overUnder.overQuote),
-               let under = parseQuote(overUnder.underQuote),
-               over > 0, under > 0 {
-                let inv = 1 / over + 1 / under
-                let overShare = (1 / over) / inv
-                let targetTotal = max(1.2, overUnder.line + (overShare - 0.5) * 1.2)
-                (homeXG, awayXG) = scaleTotal(homeXG: homeXG, awayXG: awayXG, targetTotal: targetTotal, weight: 0.35)
-            }
-
-            if let btts = bttsByKey[matchKey],
-               let yes = parseQuote(btts.yesQuote),
-               let no = parseQuote(btts.noQuote),
-               yes > 0, no > 0 {
-                let inv = 1 / yes + 1 / no
-                let yesShare = (1 / yes) / inv
-                let lowerTeamBoost = (yesShare - 0.5) * 0.30
-                if homeXG < awayXG {
-                    homeXG *= 1 + lowerTeamBoost
-                } else {
-                    awayXG *= 1 + lowerTeamBoost
-                }
-            }
-
-            if let handicap = handicapByKey[matchKey] {
-                let shift = min(0.25, abs(handicap.homeHandicap) * 0.08)
-                if handicap.homeHandicap < 0 {
-                    homeXG *= 1 + shift
-                    awayXG *= 1 - shift
-                } else if handicap.homeHandicap > 0 {
-                    homeXG *= 1 - shift
-                    awayXG *= 1 + shift
-                }
             }
 
             if learningState.sampleSize >= 30 {
-                homeXG -= learningState.avgHomeGoalOverprediction * 0.35
-                awayXG -= learningState.avgAwayGoalOverprediction * 0.35
-                if learningState.highScoreOverpredictionBias > 0 {
-                    (homeXG, awayXG) = scaleTotal(
-                        homeXG: homeXG,
-                        awayXG: awayXG,
-                        targetTotal: homeXG + awayXG - learningState.highScoreOverpredictionBias,
-                        weight: 0.25
-                    )
-                }
-            }
-
-            if let odds = oddsByKey[matchKey],
-               let homeQuote = parseQuote(odds.quoteHeim),
-               let drawQuote = parseQuote(odds.quoteUnentschieden),
-               let awayQuote = parseQuote(odds.quoteGast),
-               homeQuote > 0, drawQuote > 0, awayQuote > 0 {
-                let inv = 1 / homeQuote + 1 / drawQuote + 1 / awayQuote
-                let homeShare = (1 / homeQuote) / inv + (1 / drawQuote) / inv / 2
-                let awayShare = (1 / awayQuote) / inv + (1 / drawQuote) / inv / 2
-                let total = max(1.6, homeXG + awayXG)
-                let favoriteWinShare = max((1 / homeQuote) / inv, (1 / awayQuote) / inv)
-                let baseMarketWeight = favoriteWinShare < 0.45 ? 0.55 : 0.35
-                let learnedMarketWeight = learnedMarketWeightAdjustment()
-                let marketWeight = min(max(baseMarketWeight + marketWeightHint + learnedMarketWeight, 0.20), 0.75)
-                let marketTotal = favoriteWinShare < 0.45 ? min(total, 2.8) : total
-                homeXG = homeXG * (1 - marketWeight) + marketTotal * homeShare * marketWeight
-                awayXG = awayXG * (1 - marketWeight) + marketTotal * awayShare * marketWeight
+                homeXG -= learningState.avgHomeGoalOverprediction * 0.2
+                awayXG -= learningState.avgAwayGoalOverprediction * 0.2
             }
 
             return (
-                normalizedTeamKey(match.heim, match.gast),
+                matchKey,
                 MatchExpectedGoals(
                     heim: match.heim,
                     gast: match.gast,
@@ -1109,32 +1303,6 @@ final class AppState {
                 )
             )
         }, uniquingKeysWith: { first, _ in first })
-    }
-
-    private func venuePerformance(for team: String, isHome: Bool) -> (goalsPerGame: Double, concededPerGame: Double) {
-        let matches = finishedResults.filter { isHome ? $0.heim == team : $0.gast == team }
-        guard !matches.isEmpty else { return (0, 0) }
-        let goals = matches.map { isHome ? $0.toreHeim : $0.toreGast }
-        let conceded = matches.map { isHome ? $0.toreGast : $0.toreHeim }
-        return (
-            Double(goals.reduce(0, +)) / Double(goals.count),
-            Double(conceded.reduce(0, +)) / Double(conceded.count)
-        )
-    }
-
-    private func blended(_ overall: Double, _ venue: Double, venueWeight: Double) -> Double {
-        venue > 0 ? overall * (1 - venueWeight) + venue * venueWeight : overall
-    }
-
-    private func shrunkRate(_ value: Double, sampleCount: Int, prior: Double) -> Double {
-        guard sampleCount > 0 else { return prior }
-        let priorWeight = max(2.0, 14.0 - Double(sampleCount) * 2.0)
-        return (value * Double(sampleCount) + prior * priorWeight) / (Double(sampleCount) + priorWeight)
-    }
-
-    private func learnedMarketWeightAdjustment() -> Double {
-        decodedLearningWeights()?.marketWeightAdjustment
-            ?? (learningState.brierScore > learningState.marketBrierScore + 0.05 ? 0.10 : 0)
     }
 
     private func learnedLLMSignalWeight() -> Double {
@@ -1169,31 +1337,9 @@ final class AppState {
         return 1
     }
 
-    private func extraFixtureFactor(_ fixtures: [TeamExtraFixture]) -> Double {
-        fixtures.isEmpty ? 1 : max(0.90, 1 - Double(fixtures.count) * 0.04)
-    }
-
-    private func weatherGoalFactor(_ weather: MatchWeather) -> Double {
-        var factor = 1.0
-        if (weather.precipitationMillimeters ?? 0) >= 3 || (weather.precipitationProbability ?? 0) >= 70 {
-            factor -= 0.06
-        }
-        if (weather.windSpeedKmh ?? 0) >= 30 {
-            factor -= 0.05
-        }
-        if let temperature = weather.temperatureCelsius, temperature < 0 || temperature > 30 {
-            factor -= 0.03
-        }
-        return max(0.85, factor)
-    }
-
     private func buildRestDaysByTeam() -> [String: Int] {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackFormatter = ISO8601DateFormatter()
-
         func date(from raw: String) -> Date? {
-            formatter.date(from: raw) ?? fallbackFormatter.date(from: raw)
+            parseKickoffDate(raw)
         }
 
         var result: [String: Int] = [:]
@@ -1220,9 +1366,14 @@ final class AppState {
         return seasonValue
     }
 
+    private static let consoleCharacterLimit = 200_000
+
     private func appendConsole(_ text: String) {
         consoleOutput += text
-        AppLogger.app.debug("\(text, privacy: .public)")
+        if consoleOutput.count > Self.consoleCharacterLimit {
+            consoleOutput = "[Console gekuerzt]\n" + consoleOutput.suffix(Self.consoleCharacterLimit / 2)
+        }
+        AppLogger.app.debug("\(text, privacy: .private)")
     }
 
     private func stripANSI(_ text: String) -> String {
@@ -1254,16 +1405,19 @@ final class AppState {
     private func runCodexCommand(
         arguments: [String],
         standardInput: String? = nil,
+        timeout: TimeInterval = 15 * 60,
         userFacingAction: String,
         afterSuccess: @escaping (CodexCommandResult) throws -> Void = { _ in },
         onChunk: @escaping @MainActor (String) -> Void = { _ in }
     ) async {
+        guard !isBusy else { return }
         isBusy = true
+        codexCancelRequested = false
         errorMessage = nil
         defer { isBusy = false }
 
         do {
-            let result = try await executeCodexCommand(arguments: arguments, standardInput: standardInput, onChunk: onChunk)
+            let result = try await executeCodexCommand(arguments: arguments, standardInput: standardInput, timeout: timeout, onChunk: onChunk)
             try afterSuccess(result)
             if infoMessage?.isEmpty != false {
                 infoMessage = userFacingAction
@@ -1274,7 +1428,9 @@ final class AppState {
     }
 
     private func perform(_ operation: @escaping () async throws -> Void) async {
+        guard !isBusy else { return }
         isBusy = true
+        codexCancelRequested = false
         errorMessage = nil
         defer { isBusy = false }
 
@@ -1290,7 +1446,7 @@ final class AppState {
         }
     }
 
-    private func waitForKicktippPageToFinishLoading(timeoutNanoseconds: UInt64 = 15_000_000_000) async throws {
+    private func waitForKicktippPageToFinishLoading(urlContaining marker: String = "tippabgabe", timeoutNanoseconds: UInt64 = 15_000_000_000) async throws {
         let start = DispatchTime.now().uptimeNanoseconds
 
         // Phase 1: wait for loading to START (gives the navigation delegate time to fire)
@@ -1302,7 +1458,7 @@ final class AppState {
         }
 
         // Phase 2: wait for loading to FINISH with the correct URL
-        while kicktippAutomation.isPageLoading || kicktippAutomation.webView.url?.absoluteString.contains("tippabgabe") != true {
+        while kicktippAutomation.isPageLoading || kicktippAutomation.webView.url?.absoluteString.contains(marker) != true {
             if DispatchTime.now().uptimeNanoseconds - start > timeoutNanoseconds {
                 throw KicktippAutomationError.javaScriptError("Kicktipp-Tippabgabe konnte nicht rechtzeitig geladen werden.")
             }
@@ -1319,24 +1475,44 @@ final class AppState {
         }
 
         let currentURL = kicktippAutomation.webView.url?.absoluteString ?? ""
-        if !currentURL.contains("/\(slug)/tippabgabe") {
+        // A past matchday page (?spieltagIndex=) is not the open tip form.
+        if !currentURL.contains("/\(slug)/tippabgabe") || currentURL.contains("spieltagIndex=") {
             try kicktippAutomation.loadTippabgabe(for: slug)
         }
 
         try await waitForKicktippPageToFinishLoading()
     }
 
+    /// `codex exec` always runs read-only: prompts embed untrusted third-party text (absences, LLM research).
+    private static func codexExecArguments(outputFile: URL) -> [String] {
+        ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "--output-last-message", outputFile.path, "-"]
+    }
+
+    func cancelCodex() {
+        codexCancelRequested = true
+        activeCodexProcess?.terminate()
+        infoMessage = "Codex wird abgebrochen..."
+    }
+
     private func executeCodexCommand(
         arguments: [String],
         standardInput: String? = nil,
+        timeout: TimeInterval = 15 * 60,
         onChunk: @escaping @MainActor (String) -> Void = { _ in }
     ) async throws -> CodexCommandResult {
+        guard !codexCancelRequested else { throw CodexCLIError.cancelled }
         appendConsole("\n$ \(codexPath) \(arguments.joined(separator: " "))\n")
+
+        let handle = CodexProcessHandle()
+        activeCodexProcess = handle
+        defer { activeCodexProcess = nil }
 
         return try await codexCLIService.run(
             executablePath: codexPath,
             arguments: arguments,
-            standardInput: standardInput
+            standardInput: standardInput,
+            timeout: timeout,
+            handle: handle
         ) { chunk in
             Task { @MainActor in
                 onChunk(chunk)
@@ -1348,9 +1524,9 @@ final class AppState {
         guard !upcomingMatches.isEmpty else { return [] }
 
         let missingSignals = [
-            teamShotsStats.isEmpty ? "Shots-on-Goal und Verwertung" : nil,
-            matchReferees.isEmpty ? "Schiedsrichter-Statistiken" : nil,
-            teamExtraFixtures.isEmpty ? "Zusatzbelastung durch Europa/Pokal" : nil,
+            "Shots-on-Goal und Verwertung",
+            "Schiedsrichter-Statistiken",
+            "Zusatzbelastung durch Europa/Pokal",
             "Sharp-Odds/Exchange-Check",
             "Lineup- und kurzfristige Teamnews",
             "Spielerwerte nach Minuten, Position, xG/xA, Defensive Actions und Keeper-Wert",
@@ -1358,7 +1534,7 @@ final class AppState {
             "saisonuebergreifende historische Team- und Liga-Basisdaten",
             "Scoreline-Kalibrierung aus historischer Ergebnisverteilung",
             "dynamischer Gewichtungshinweis fuer Markt/Form/Lineup/Spielerimpact"
-        ].compactMap { $0 }
+        ]
         let prompt = tipWorkflowService.buildLLMEnrichmentPrompt(
             season: seasonValue,
             upcomingMatches: upcomingMatches,
@@ -1371,7 +1547,7 @@ final class AppState {
 
         do {
             let result = try await executeCodexCommand(
-                arguments: ["exec", "--skip-git-repo-check", "--output-last-message", outputFile.path, "-"],
+                arguments: Self.codexExecArguments(outputFile: outputFile),
                 standardInput: prompt
             ) { chunk in
                 self.appendConsole(self.stripANSI(chunk))
@@ -1409,7 +1585,7 @@ final class AppState {
 
             do {
                 let result = try await executeCodexCommand(
-                    arguments: ["exec", "--skip-git-repo-check", "--output-last-message", outputFile.path, "-"],
+                    arguments: Self.codexExecArguments(outputFile: outputFile),
                     standardInput: prompt
                 ) { chunk in
                     self.appendConsole(self.stripANSI(chunk))
@@ -1420,6 +1596,8 @@ final class AppState {
                 }
                 let output = try String(contentsOf: outputFile, encoding: .utf8)
                 updates.append(contentsOf: try tipWorkflowService.parseClosingLineUpdates(from: output))
+            } catch CodexCLIError.cancelled {
+                break
             } catch {
                 appendConsole("[CLV] Closing-Line-Recherche fehlgeschlagen: \(error.localizedDescription)\n")
             }
@@ -1466,7 +1644,7 @@ final class AppState {
             defer { try? FileManager.default.removeItem(at: outputFile) }
 
             do {
-                let arguments = ["exec", "--skip-git-repo-check", "--output-last-message", outputFile.path, "-"]
+                let arguments = Self.codexExecArguments(outputFile: outputFile)
                 let result = try await executeCodexCommand(arguments: arguments, standardInput: generatedPrompt) { chunk in
                     self.appendConsole(self.stripANSI(chunk))
                 }
@@ -1480,6 +1658,8 @@ final class AppState {
                 let tips = try tipWorkflowService.parseTips(from: output, upcomingMatches: upcomingMatches)
                 successfulRuns.append((tips: tips, rawResponse: output, runIndex: runIndex))
                 appendConsole("[Ensemble] Lauf \(runIndex)/\(runCount) erfolgreich geparst.\n")
+            } catch CodexCLIError.cancelled {
+                throw CodexCLIError.cancelled
             } catch {
                 failedRuns += 1
                 appendConsole("[Ensemble] Lauf \(runIndex)/\(runCount) fehlgeschlagen: \(error.localizedDescription)\n")
@@ -1512,14 +1692,18 @@ final class AppState {
             .sorted { $0.heim < $1.heim }
             .map { String(format: "%@ %.2f : %.2f %@", $0.heim, $0.home, $0.away, $0.gast) }
             .joined(separator: " | ") + "\n")
-        let aggregatedTips = try ensembleService.aggregateTips(
+        let aggregated = try ensembleService.aggregate(
             from: successfulRuns.map(\.tips),
             upcomingMatches: upcomingMatches,
             bettingOdds: bettingOdds,
             expectedGoals: expectedGoals
         )
+        let probabilityModels = Dictionary(
+            aggregated.map { (normalizedTeamKey($0.tip.heim, $0.tip.gast), $0.model) },
+            uniquingKeysWith: { first, _ in first }
+        )
         let stabilized = Self.stabilizeShortTermTips(
-            aggregatedTips,
+            aggregated.map(\.tip),
             previousRuns: predictionRuns,
             currentRuns: successfulRuns.map(\.tips),
             seasonIdentifier: season.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1528,7 +1712,7 @@ final class AppState {
             appendConsole("[Stabilitaet] \(stabilized.stabilizedCount) Tipp(s) aus vorherigem Kurzfrist-Run beibehalten; neuer Lauf ohne starken Konsens.\n")
         }
         importedResponse = tipWorkflowService.encodeTipsAsJSON(stabilized.tips)
-        importTipsFromResponse()
+        importTipsFromResponse(probabilityModels: probabilityModels)
         if failedRuns > 0 {
             appendConsole("[Ensemble] \(failedRuns) Lauf/Laeufe wurden verworfen.\n")
         }
@@ -1538,14 +1722,16 @@ final class AppState {
     }
 
     private func persistLearningStore() {
+        guard !learningPersistenceDisabled else { return }
         do {
-            try predictionStore.save(runs: predictionRuns, learningState: learningState)
+            try predictionStore.save(runs: predictionRuns, learningState: learningState, community: communityMatchdays, oddsArchive: oddsArchive)
         } catch {
             appendConsole("[Learning] Persistenz fehlgeschlagen: \(error.localizedDescription)\n")
         }
     }
 
     private func persistTipHistory() {
+        guard !tipHistoryPersistenceDisabled else { return }
         do {
             try tipHistoryStore.save(tipHistory)
         } catch {
@@ -1555,9 +1741,9 @@ final class AppState {
 
     private func syncManualKicktippTipsForLearning(from fields: [KicktippMatchField]) {
         let tips = Self.manualTips(from: fields, upcomingMatches: upcomingMatches)
-        guard !tips.isEmpty, !hasPredictionRun(modelName: "kicktipp-manual", tips: tips) else { return }
+        guard !tips.isEmpty, !hasPredictionRun(modelName: PredictionRun.manualModelName, tips: tips) else { return }
 
-        recordPredictionRun(tips: tips, rawPrompt: "", rawResponse: "", modelName: "kicktipp-manual")
+        recordPredictionRun(tips: tips, rawPrompt: "", rawResponse: "", modelName: PredictionRun.manualModelName)
         appendConsole("[Learning] \(tips.count) manuelle Kicktipp-Tipps fuer Self-Learning gespeichert.\n")
     }
 
@@ -1581,7 +1767,13 @@ final class AppState {
         }
     }
 
-    private func recordPredictionRun(tips: [SuggestedTip], rawPrompt: String, rawResponse: String, modelName: String = "codex-cli-ensemble") {
+    private func recordPredictionRun(
+        tips: [SuggestedTip],
+        rawPrompt: String,
+        rawResponse: String,
+        modelName: String = PredictionRun.ensembleModelName,
+        probabilityModels: [String: EnsembleService.MatchProbabilityModel] = [:]
+    ) {
         guard !tips.isEmpty else { return }
 
         let runId = UUID()
@@ -1591,6 +1783,7 @@ final class AppState {
         let contexts = Dictionary(buildPredictionContexts().map { (normalizedTeamKey($0.upcomingMatch.heim, $0.upcomingMatch.gast), $0) }, uniquingKeysWith: { first, _ in first })
         let matches = tips.map { tip -> MatchPrediction in
             let context = contexts[normalizedTeamKey(tip.heim, tip.gast)]
+            let model = probabilityModels[normalizedTeamKey(tip.heim, tip.gast)]
             return MatchPrediction(
                 id: UUID(),
                 runId: runId,
@@ -1626,6 +1819,11 @@ final class AppState {
                 expectedHomeGoals: context?.expectedHomeGoals,
                 expectedAwayGoals: context?.expectedAwayGoals,
                 marketWeightHint: context?.marketWeightHint,
+                probabilityHomeWin: model?.probabilityHomeWin,
+                probabilityDraw: model?.probabilityDraw,
+                probabilityAwayWin: model?.probabilityAwayWin,
+                confidence: model?.confidence,
+                topScorelines: model?.topScorelines,
                 actualHomeGoals: nil,
                 actualAwayGoals: nil,
                 actualOutcome: nil,
@@ -1645,7 +1843,7 @@ final class AppState {
                 createdAt: createdAt,
                 spieltag: tips.first?.spieltag ?? 0,
                 modelName: modelName,
-                promptVersion: "xg-dixon-coles-shrinkage-llm-v4",
+                promptVersion: Self.promptVersion,
                 rawPrompt: rawPrompt,
                 rawResponse: rawResponse,
                 seasonIdentifier: seasonIdentifier,

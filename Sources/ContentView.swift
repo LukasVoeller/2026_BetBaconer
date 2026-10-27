@@ -37,6 +37,21 @@ struct ContentView: View {
         .task {
             await state.initializeKicktipp()
         }
+        .confirmationDialog(
+            "Vorhandene Kicktipp-Tipps ueberschreiben?",
+            isPresented: Binding(
+                get: { !state.pendingKicktippOverwrites.isEmpty },
+                set: { if !$0 { state.pendingKicktippOverwrites = [] } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Ueberschreiben", role: .destructive) {
+                Task { await state.applyTipsToKicktipp(confirmOverwrite: true) }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text(state.pendingKicktippOverwrites.joined(separator: "\n"))
+        }
     }
 
     // MARK: - Tab Bar
@@ -143,6 +158,39 @@ struct ContentView: View {
                         Text("\(state.codexRunCount) Lauf/Laeufe pro Analyse")
                     }
                 }
+                inputGroup(title: "Kicktipp-Punkteregel der Tipprunde") {
+                    Stepper(value: $state.kicktippRules.exactScorePoints, in: 0...10) {
+                        Text("Ergebnis: \(Int(state.kicktippRules.exactScorePoints)) Punkte")
+                    }
+                    Stepper(value: $state.kicktippRules.goalDifferencePoints, in: 0...10) {
+                        Text("Tordifferenz: \(Int(state.kicktippRules.goalDifferencePoints)) Punkte")
+                    }
+                    Stepper(value: $state.kicktippRules.tendencyPoints, in: 0...10) {
+                        Text("Tendenz: \(Int(state.kicktippRules.tendencyPoints)) Punkte")
+                    }
+                    Toggle("Tordifferenz-Punkte auch bei Remis", isOn: $state.kicktippRules.drawCountsAsGoalDifference)
+                    if let inferred = state.inferredKicktippRules {
+                        let rules = inferred.rules
+                        Text(String(format: "Aus %d Mitspieler-Tipps erkannt: %.0f/%.0f/%.0f, Remis-Tordifferenz %@",
+                                    inferred.sampleCount, rules.exactScorePoints, rules.goalDifferencePoints, rules.tendencyPoints,
+                                    rules.drawCountsAsGoalDifference ? "ja" : "nein"))
+                            .font(.caption)
+                            .foregroundStyle(rules == state.kicktippRules ? Color.secondary : Color.orange)
+                        if rules != state.kicktippRules {
+                            Button("Erkannte Regel uebernehmen") { state.adoptInferredKicktippRules() }
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                inputGroup(title: "Ranglisten-Strategie") {
+                    TextField("Mein Name in der Tipprunde", text: $state.kicktippPlayerName)
+                        .textFieldStyle(.roundedBorder)
+                    Toggle("Tipps an Ranglage anpassen", isOn: $state.useRankingStrategy)
+                    Text(state.rankingStrategy.map { String(format: "%@ Max. %.2f erwartete Punkte Verzicht je Spiel.", $0.summary, $0.tolerance) }
+                         ?? "Kostet bewusst bis zu 0,25 erwartete Punkte je Spiel, um die Siegchance zu erhoehen. Braucht Name und geladene Mitspieler-Tipps.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -178,6 +226,7 @@ struct ContentView: View {
                     fullWidthButtonLabel("Status prüfen")
                 }
                 .buttonStyle(.bordered)
+                .disabled(state.isBusy)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button {
@@ -190,6 +239,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(brandOrange)
+                .disabled(state.isBusy)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -206,6 +256,7 @@ struct ContentView: View {
                         fullWidthButtonLabel("Login öffnen")
                     }
                     .buttonStyle(.bordered)
+                    .disabled(state.isBusy)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     Button {
@@ -217,6 +268,7 @@ struct ContentView: View {
                         fullWidthButtonLabel("Tippabgabe laden")
                     }
                     .buttonStyle(.bordered)
+                    .disabled(state.isBusy)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 }
@@ -299,6 +351,10 @@ struct ContentView: View {
                         Text("Läuft...")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Codex abbrechen") { state.cancelCodex() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                     }
                 }
             }
@@ -323,6 +379,18 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(brandOrange)
+                    .disabled(state.isBusy)
+
+                    Button {
+                        Task {
+                            await state.loadCommunityTips()
+                            selectedTab = .learning
+                        }
+                    } label: {
+                        fullWidthButtonLabel("Kicktipp-Historie laden")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(state.isBusy || state.kicktippCompetitionSlug.isEmpty)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -606,7 +674,7 @@ struct ContentView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(state.finishedResults) { r in
-                                row("\(r.spieltag). Spieltag", "\(r.heim)  \(r.toreHeim):\(r.toreGast)  \(r.gast)", r.datum)
+                                row("\(r.spieltag). Spieltag", "\(r.heim)  \(r.toreHeim):\(r.toreGast)  \(r.gast)", formattedKickoff(r.datum))
                             }
                         }
                     }
@@ -619,7 +687,7 @@ struct ContentView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(state.upcomingMatches) { m in
-                                row("\(m.spieltag). Spieltag", "\(m.heim) vs. \(m.gast)", m.datum)
+                                row("\(m.spieltag). Spieltag", "\(m.heim) vs. \(m.gast)", formattedKickoff(m.datum))
                             }
                         }
                     }
@@ -677,6 +745,49 @@ struct ContentView: View {
                         Text(state.learningState.correctionSummaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
+                    }
+                }
+            }
+            card(title: "Modell-Backtest", icon: "chart.line.uptrend.xyaxis") {
+                VStack(alignment: .leading, spacing: 8) {
+                    metricRow("Marktgewicht", String(format: "%.0f%%", state.learnedMarketWeight * 100))
+                    metricRow("Archivierte Quoten", "\(state.oddsArchive.count)")
+                    Button("Backtest ausfuehren") {
+                        Task { await state.runModelBacktest() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(brandOrange)
+                    .disabled(state.isBusy)
+                    if state.backtestReport.isEmpty {
+                        emptyState("Prueft das Modell Spieltag fuer Spieltag an den letzten Saisons und lernt das Marktgewicht aus dem Quoten-Archiv.")
+                    } else {
+                        ScrollView {
+                            Text(state.backtestReport)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+            card(title: "App vs. Tipprunde", icon: "person.3") {
+                if state.communityBacktest.isEmpty {
+                    emptyState("Noch keine Mitspieler-Tipps zu Spieltagen mit App-Tipps geladen.")
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(state.communityBacktest) { row in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\(row.spieltag). Spieltag: \(row.appPoints) Punkte")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(String(format: "Rang %d/%d | Runde Ø %.1f | Bester %d", row.appRank, row.playerCount, row.groupAverage, row.groupBest))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                Divider()
+                            }
+                        }
                     }
                 }
             }
@@ -775,15 +886,11 @@ struct ContentView: View {
         let weather = state.matchWeather.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
         let enrichment = state.llmMatchEnrichments.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
         let expectedGoals = state.matchExpectedGoals.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
-        let referee = state.matchReferees.first { teamNamesLikelyMatch($0.heim, tip.heim) && teamNamesLikelyMatch($0.gast, tip.gast) }
+        let modelPrediction = state.latestEnsemblePrediction(for: tip)
         let h2h     = state.finishedResults
             .filter { ($0.heim == tip.heim && $0.gast == tip.gast) || ($0.heim == tip.gast && $0.gast == tip.heim) }
             .sorted { ($0.spieltag, $0.datum) > ($1.spieltag, $1.datum) }
             .prefix(5)
-        let heimExtras = state.teamExtraFixtures.filter { teamNamesLikelyMatch($0.teamName, tip.heim) }
-        let gastExtras = state.teamExtraFixtures.filter { teamNamesLikelyMatch($0.teamName, tip.gast) }
-        let heimShots  = state.teamShotsStats.first { teamNamesLikelyMatch($0.teamName, tip.heim) }
-        let gastShots  = state.teamShotsStats.first { teamNamesLikelyMatch($0.teamName, tip.gast) }
         let absences   = state.playerAbsences.filter { teamNamesLikelyMatch($0.teamName, tip.heim) || teamNamesLikelyMatch($0.teamName, tip.gast) }
         let heimAbsences = absences.filter { teamNamesLikelyMatch($0.teamName, tip.heim) }
         let gastAbsences = absences.filter { teamNamesLikelyMatch($0.teamName, tip.gast) }
@@ -799,15 +906,10 @@ struct ContentView: View {
             }
             return nil
         }()
-        let belastungText: String? = {
-            let all = heimExtras + gastExtras
-            guard !all.isEmpty else { return nil }
-            return all.map { e in "\(e.teamName): \(e.competition) vs. \(e.opponent) (\(e.isHome ? "Heim" : "Ausw."))" }.joined(separator: "  |  ")
-        }()
         let h2hText: String? = h2h.isEmpty ? nil :
             h2h.map { "\($0.heim) \($0.toreHeim):\($0.toreGast) \($0.gast)" }.joined(separator: "  |  ")
         let hasMarketFactors = odds != nil || tormarktEntry != nil || hcp != nil
-        let hasContextFactors = weather != nil || referee != nil || h2hText != nil || belastungText != nil || heimShots != nil || gastShots != nil
+        let hasContextFactors = weather != nil || h2hText != nil
         let enrichmentRows: [(String, String)] = enrichment.map { e in
             [
                 ("Spielerimpact", e.playerImpact),
@@ -853,7 +955,22 @@ struct ContentView: View {
                 if let expectedGoals {
                     tipMetricRow("xG", String(format: "%@ %.2f | %@ %.2f", tip.heim, expectedGoals.home, tip.gast, expectedGoals.away))
                 }
-                tipMetricRow("Finale Auswahl", "Dixon-Coles/Poisson-Scoreline mit hoechster Einzelwahrscheinlichkeit")
+                if let modelPrediction,
+                   let home = modelPrediction.probabilityHomeWin,
+                   let draw = modelPrediction.probabilityDraw,
+                   let away = modelPrediction.probabilityAwayWin {
+                    tipMetricRow("Wahrscheinlichkeiten", String(format: "1 %.0f%% | X %.0f%% | 2 %.0f%%", home * 100, draw * 100, away * 100))
+                }
+                if let confidence = modelPrediction?.confidence {
+                    tipMetricRow("Modell-Sicherheit", String(format: "%.0f/100 (heuristisch)", confidence * 100))
+                }
+                if let topScorelines = modelPrediction?.topScorelines, !topScorelines.isEmpty {
+                    tipMetricRow(
+                        "Top-3",
+                        topScorelines.map { String(format: "%d:%d %.0f%%", $0.homeGoals, $0.awayGoals, $0.probability * 100) }.joined(separator: "  |  ")
+                    )
+                }
+                tipMetricRow("Finale Auswahl", "Maximale erwartete Kicktipp-Punkte (Punkteregel aus den Einstellungen) aus der Poisson-Scoreline-Matrix")
             }
 
             if hasMarketFactors {
@@ -877,20 +994,8 @@ struct ContentView: View {
                     if let weather {
                         tipMetricRow("Wetter", tipWeatherText(weather))
                     }
-                    if let referee {
-                        tipMetricRow("Schiedsrichter", referee.referee)
-                    }
                     if let h2hText {
                         tipMetricRow("H2H", h2hText)
-                    }
-                    if let belastungText {
-                        tipMetricRow("Belastung", belastungText)
-                    }
-                    if let hs = heimShots {
-                        tipMetricRow("Shots \(tip.heim)", String(format: "%.1f SOG/Sp. (Heim) | Verwertung %.0f%%", hs.shotsOnGoalPerGameHome, hs.shotsOnGoalConversionHome * 100))
-                    }
-                    if let gs = gastShots {
-                        tipMetricRow("Shots \(tip.gast)", String(format: "%.1f SOG/Sp. (Ausw.) | Verwertung %.0f%%", gs.shotsOnGoalPerGameAway, gs.shotsOnGoalConversionAway * 100))
                     }
                 }
             }

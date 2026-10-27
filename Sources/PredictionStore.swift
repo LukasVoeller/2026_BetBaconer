@@ -1,13 +1,14 @@
 import Foundation
 
 enum PredictionStoreError: LocalizedError {
-    case failedToLoad
+    case failedToLoad(backup: URL?)
     case failedToSave
 
     var errorDescription: String? {
         switch self {
-        case .failedToLoad:
+        case let .failedToLoad(backup):
             return "Der Learning-Store konnte nicht geladen werden."
+                + (backup.map { " Die Datei wurde nach \($0.lastPathComponent) gesichert, es wird neu begonnen." } ?? " Speichern ist deaktiviert, um Datenverlust zu vermeiden.")
         case .failedToSave:
             return "Der Learning-Store konnte nicht gespeichert werden."
         }
@@ -23,14 +24,23 @@ struct PredictionStore {
         self.legacyHistoryURL = legacyHistoryURL
     }
 
-    func load() throws -> (runs: [PredictionRun], learningState: LearningState) {
-        if let data = try? Data(contentsOf: fileURL) {
+    func load() throws -> (runs: [PredictionRun], learningState: LearningState, community: [CommunityMatchday], oddsArchive: [ArchivedOdds]) {
+        if FileManager.default.fileExists(atPath: fileURL.path) {
             let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            guard let payload = try? decoder.decode(LearningPersistencePayload.self, from: data) else {
-                throw PredictionStoreError.failedToLoad
+            decoder.dateDecodingStrategy = .custom { decoder in
+                let raw = try decoder.singleValueContainer().decode(String.self)
+                guard let date = Self.fractionalFormatter.date(from: raw) ?? Self.plainFormatter.date(from: raw) else {
+                    throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Ungueltiges Datum: \(raw)"))
+                }
+                return date
             }
-            return (payload.predictionRuns, payload.learningState)
+            do {
+                let payload = try decoder.decode(LearningPersistencePayload.self, from: Data(contentsOf: fileURL))
+                return (payload.predictionRuns, payload.learningState, payload.communityMatchdays ?? [], payload.oddsArchive ?? [])
+            } catch {
+                AppLogger.persistence.error("Learning store load failed: \(error.localizedDescription, privacy: .public)")
+                throw PredictionStoreError.failedToLoad(backup: AppSupportPaths.quarantine(fileURL))
+            }
         }
 
         let migratedRuns = migrateLegacyTipHistory()
@@ -38,18 +48,24 @@ struct PredictionStore {
         if !migratedRuns.isEmpty {
             try save(runs: migratedRuns, learningState: state)
         }
-        return (migratedRuns, state)
+        return (migratedRuns, state, [], [])
     }
 
-    func save(runs: [PredictionRun], learningState: LearningState) throws {
+    func save(runs: [PredictionRun], learningState: LearningState, community: [CommunityMatchday] = [], oddsArchive: [ArchivedOdds] = []) throws {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        // Fractional seconds keep ordering of runs created within the same second (single runs vs. ensemble).
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(Self.fractionalFormatter.string(from: date))
+        }
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
         let payload = LearningPersistencePayload(
             version: 1,
             predictionRuns: runs,
-            learningState: learningState
+            learningState: learningState,
+            communityMatchdays: community,
+            oddsArchive: oddsArchive
         )
 
         guard let data = try? encoder.encode(payload) else {
@@ -136,6 +152,13 @@ struct PredictionStore {
         return month >= 7 ? year : year - 1
     }
 
+    nonisolated(unsafe) private static let fractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    nonisolated(unsafe) private static let plainFormatter = ISO8601DateFormatter()
+
     private static var defaultFileURL: URL {
         let dir = AppSupportPaths.appDirectory()
         return dir.appendingPathComponent("learning-store.json")
@@ -151,4 +174,7 @@ private struct LearningPersistencePayload: Codable {
     let version: Int
     let predictionRuns: [PredictionRun]
     let learningState: LearningState
+    /// Fellow players' tips per finished matchday; optional so older stores still decode.
+    let communityMatchdays: [CommunityMatchday]?
+    let oddsArchive: [ArchivedOdds]?
 }
