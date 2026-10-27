@@ -14,7 +14,13 @@ Der Nutzer soll mit einem einzigen Klick KI-gestützte Tipps in sein Kicktipp-Ko
 
 ## Architektur
 
-- **AppState** (`AppState.swift`) — zentraler `@MainActor @Observable` State, orchestriert alle Services; `isBusy` sperrt parallele Vorgänge
+- **AppState** (`AppState.swift`) — zentraler `@MainActor @Observable` State (Einstellungen, Daten, Persistenz, `perform`/`isBusy` gegen parallele Vorgänge); Abläufe in Extensions:
+  - `AppState+Workflow.swift` — Datenladen, Codex-Ensemble, Tipp-Auswahl, Prediction-Records
+  - `AppState+Kicktipp.swift` — Tippformular, Absenden, Tippübersicht und Quoten vergangener Spieltage
+  - `AppState+Learning.swift` — Auswertung, Quoten-Archiv, Backtest, CSV-Import, Aktualisierung vor Anstoß
+  - `AppState+Codex.swift` — Login, Ausführung, Zwischenablage
+- **CodexRunner** (`CodexRunner.swift`) — laufender Codex-Prozess: Sandbox-Argumente, Timeout, Abbruch
+- **OddsRemapper** / **TipTextFormatter** — Quoten auf Spielpaarungen abbilden, Kopiertexte erzeugen
 - **KicktippAutomation** (`KicktippAutomation.swift`) — `@Observable` WKWebView-Wrapper mit JS-Injection für Kicktipp
 - **KicktippWebView** (`KicktippWebView.swift`) — NSViewRepresentable-Wrapper für den eingebetteten Browser
 - **OpenLigaDBService** (`OpenLigaDBService.swift`) — Spielplan/Ergebnisse; nutzt `matchDateTimeUTC`, überspringt Nachholspiele
@@ -30,7 +36,7 @@ Der Nutzer soll mit einem einzigen Klick KI-gestützte Tipps in sein Kicktipp-Ko
 - **PredictionStore** / **TipHistoryStore** — JSON-Persistenz in Application Support (`AppSupportPaths`), korrupte Dateien werden gesichert
 - **KicktippCommunityService** (`KicktippCommunityService.swift`) — liest die Kicktipp-Tippübersicht (generische Tabellen-Extraktion), leitet Punkteregel, Stil-Benchmark, Backtest und Ranglisten-Strategie ab; gespeichert im Learning-Store
 - **TeamNameNormalizer** (`TeamNameNormalizer.swift`) — kanonische Teamnamen, Match-Funktionen und Anstoßzeit-Parsing für alle Quellen
-- **ContentView** (`ContentView.swift`) — SwiftUI UI mit NavigationSplitView
+- **ContentView** (`ContentView.swift` + `ContentView+Sidebar/Settings/Tips/History/Learning.swift`) — SwiftUI UI mit NavigationSplitView, je Tab eine Datei
 
 ## UI-Struktur
 
