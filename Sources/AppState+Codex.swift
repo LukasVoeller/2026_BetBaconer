@@ -110,9 +110,9 @@ extension AppState {
         timeout: TimeInterval = 15 * 60,
         onChunk: @escaping @MainActor (String) -> Void = { _ in }
     ) async throws -> CodexCommandResult {
-        appendConsole("\n$ \(codexPath) \(arguments.joined(separator: " "))\n")
+        appendConsole("\n$ \(settings.codexPath) \(arguments.joined(separator: " "))\n")
         return try await codexRunner.run(
-            executablePath: codexPath,
+            executablePath: settings.codexPath,
             arguments: arguments,
             standardInput: standardInput,
             timeout: timeout,

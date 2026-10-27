@@ -5,7 +5,7 @@ import SwiftUI
 extension ContentView {
     var historyTab: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if state.tipHistory.isEmpty {
+            if state.learning.tipHistory.isEmpty {
                 emptyState("Noch keine Generierungen aufgezeichnet.")
             } else {
                 Text("\(state.latestTipHistory.count) Spieltag(e) gespeichert")
@@ -144,7 +144,7 @@ extension ContentView {
 
     private func actualResultText(for tip: SuggestedTip, in record: TipGenerationRecord) -> String {
         let recordSeason = String(AppState.currentBundesligaSeason(for: record.timestamp))
-        if let prediction = state.predictionRuns
+        if let prediction = state.learning.predictionRuns
             .reversed()
             .first(where: { run in
                 run.seasonIdentifier == recordSeason

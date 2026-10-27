@@ -97,7 +97,13 @@ struct KicktippCommunityService {
       if (!table || scoreCount(table) === 0) {
         return JSON.stringify({ url: location.href, header: [], rows: [], error: 'NO_TABLE', title: document.title });
       }
-      const cells = tr => Array.from(tr.children).map(c => (c.innerText || '').replace(/\s+/g, ' ').trim());
+      // Kicktipp renders "VFB", "BMG" and "2:3" as side-by-side .headerbox blocks; innerText would glue them together.
+      const cellText = c => {
+        const boxes = c.querySelectorAll('.headerbox');
+        const raw = boxes.length ? Array.from(boxes).map(b => b.textContent || '').join(' ') : (c.innerText || c.textContent || '');
+        return raw.replace(/\s+/g, ' ').trim();
+      };
+      const cells = tr => Array.from(tr.children).map(cellText);
       const headerRows = table.tHead ? Array.from(table.tHead.rows) : [table.rows[0]];
       const bodyRows = Array.from(table.tBodies).flatMap(b => Array.from(b.rows)).filter(r => !headerRows.includes(r));
       return JSON.stringify({ url: location.href, header: headerRows.map(cells), rows: bodyRows.map(cells) });
@@ -195,8 +201,11 @@ struct KicktippCommunityService {
         return String(cleaned.prefix(24))
     }
 
-    /// "VFB BMG 2:3" or "VFB BMG" (match not finished yet).
+    /// "VFB BMG 2:3", "VFB BMG" (not finished yet) or the glued form "VFBBMG2:3" of three-letter codes.
     static func parseHeaderMatch(_ cell: String) -> (home: String, away: String, result: (Int, Int)?)? {
+        if let glued = cell.wholeMatch(of: /([A-Z0-9]{3})([A-Z0-9]{3})(\d+:\d+)?/) {
+            return (String(glued.1), String(glued.2), glued.3.flatMap { parseScore(String($0)) })
+        }
         let parts = cell.split(separator: " ").map(String.init)
         guard parts.count == 2 || parts.count == 3,
               parts[0].range(of: #"^[A-Z0-9ÄÖÜ]{2,4}$"#, options: .regularExpression) != nil,
@@ -242,10 +251,12 @@ struct KicktippCommunityService {
                 }
             }
         }
-        guard let exactPoints = mode(exact), let differencePoints = mode(difference), let tendencyPoints = mode(tendency) else {
+        // Odds-based groups ("Quotenpunkte") award varying points; then there is no fixed rule to infer.
+        guard let exactPoints = consistentMode(exact), let differencePoints = consistentMode(difference),
+              let tendencyPoints = consistentMode(tendency) else {
             return nil
         }
-        let drawPoints = mode(drawDifference)
+        let drawPoints = consistentMode(drawDifference)
         return InferredKicktippRules(
             rules: KicktippRules(
                 exactScorePoints: Double(exactPoints),
@@ -378,6 +389,12 @@ struct KicktippCommunityService {
         lines.append("</tipprunde-daten>")
         lines.append("Nutze die Stil-Statistik nur als Kalibrierung (z. B. Remis- und Torniveau); die Tipps der Mitspieler fuer den naechsten Spieltag sind unbekannt.")
         return lines.joined(separator: "\n")
+    }
+
+    /// Most common value, only if at least 90 % of the samples agree.
+    private func consistentMode(_ values: [Int]) -> Int? {
+        guard let value = mode(values) else { return nil }
+        return Double(values.filter { $0 == value }.count) >= Double(values.count) * 0.9 ? value : nil
     }
 
     private func mode(_ values: [Int]) -> Int? {

@@ -29,25 +29,34 @@ final class StubURLProtocol: URLProtocol {
 @MainActor
 final class KicktippTestServer: NSObject, WKURLSchemeHandler {
     private(set) var requests: [(method: String, url: String)] = []
+    /// Matchday the current tip form claims to show.
+    var formMatchday = 2
 
+    /// Mirrors the real Kicktipp form: plain cells (no col1/col2), a kickoff cell, odds as "1 / X / 2" text,
+    /// hidden spieltagIndex and tippAbgegeben fields, a submit button.
     static let tipForm = """
-    <html><body><form id="tippabgabeForm" method="post" action="kicktipp-test://kicktipp/runde/tippabgabe">
+    <html><body><div class="prevnextTitle"><a>2. Spieltag</a></div>
+    <form id="tippabgabeForm" action="kicktipp-test://kicktipp/runde/tippabgabe" method="post">
+    <input type="hidden" name="spieltagIndex" value="2" />
     <table id="tippabgabeSpiele"><tbody>
-      <tr class="datarow"><td class="col1">Borussia Mönchengladbach</td><td class="col2">RB Leipzig</td>
-        <td><input id="a_heimTipp" name="spieltippForms[1].heimTipp" value=""><input id="a_gastTipp" name="spieltippForms[1].gastTipp" value=""></td>
-        <td class="tippabgabe-quoten"><span class="quoteheim"><span class="quote-text">2,60</span></span><span class="quoteremis"><span class="quote-text">3,50</span></span><span class="quotegast"><span class="quote-text">2,50</span></span></td></tr>
-      <tr class="datarow"><td class="col1">SV 07 Elversberg</td><td class="col2">VfB Stuttgart</td>
-        <td><input id="b_heimTipp" name="spieltippForms[2].heimTipp" value=""><input id="b_gastTipp" name="spieltippForms[2].gastTipp" value=""></td>
-        <td class="tippabgabe-quoten"><span class="quoteheim"><span class="quote-text">4,20</span></span><span class="quoteremis"><span class="quote-text">3,90</span></span><span class="quotegast"><span class="quote-text">1,75</span></span></td></tr>
-    </tbody></table><input type="submit" name="submitbutton" value="Tipps speichern"></form></body></html>
+      <tr><td class="nw kicktipp-time">16.01.27 15:30</td><td class="nw">Borussia Mönchengladbach</td><td class="nw">RB Leipzig</td>
+        <td class="kicktipp-tippabgabe"><input type="hidden" name="spieltippForms[1].tippAbgegeben" value="true" />
+        <input id="spieltippForms_1_heimTipp" name="spieltippForms[1].heimTipp" type="text" /><input id="spieltippForms_1_gastTipp" name="spieltippForms[1].gastTipp" type="text" /></td>
+        <td class="kicktipp-wettquote">2.60 / 3.50 / 2.50</td></tr>
+      <tr><td class="nw kicktipp-time">16.01.27 18:30</td><td class="nw">SV 07 Elversberg</td><td class="nw">VfB Stuttgart</td>
+        <td class="kicktipp-tippabgabe"><input type="hidden" name="spieltippForms[2].tippAbgegeben" value="true" />
+        <input id="spieltippForms_2_heimTipp" name="spieltippForms[2].heimTipp" type="text" /><input id="spieltippForms_2_gastTipp" name="spieltippForms[2].gastTipp" type="text" /></td>
+        <td class="kicktipp-wettquote">4.20 / 3.90 / 1.75</td></tr>
+    </tbody></table>
+    <button type="submit" name="submitbutton">Tipps speichern</button></form></body></html>
     """
 
     static let pastTipPage = """
-    <html><body><table id="tippabgabeSpiele"><tbody>
-      <tr class="datarow"><td class="col1">VfB Stuttgart</td><td class="col2">Borussia Mönchengladbach</td>
-        <td class="tippabgabe-quoten"><span class="quoteheim"><span class="quote-text">1,90</span></span><span class="quoteremis"><span class="quote-text">3,80</span></span><span class="quotegast"><span class="quote-text">3,70</span></span></td></tr>
-      <tr class="datarow"><td class="col1">RB Leipzig</td><td class="col2">SV 07 Elversberg</td>
-        <td class="tippabgabe-quoten"><span class="quoteheim"><span class="quote-text">1,25</span></span><span class="quoteremis"><span class="quote-text">6,50</span></span><span class="quotegast"><span class="quote-text">11,00</span></span></td></tr>
+    <html><body><div class="prevnextTitle"><a>1. Spieltag</a></div><table id="tippabgabeSpiele"><tbody>
+      <tr><td class="nw kicktipp-time">21.08.26 20:30</td><td class="nw">VfB Stuttgart</td><td class="nw">Borussia Mönchengladbach</td>
+        <td class="nw">2:3</td><td class="kicktipp-wettquote">2.50 / 3.40 / 2.50</td></tr>
+      <tr><td class="nw kicktipp-time">22.08.26 15:30</td><td class="nw">RB Leipzig</td><td class="nw">SV 07 Elversberg</td>
+        <td class="nw">4:0</td><td class="kicktipp-wettquote">1.25 / 6.50 / 11.00</td></tr>
     </tbody></table></body></html>
     """
 
@@ -68,7 +77,7 @@ final class KicktippTestServer: NSObject, WKURLSchemeHandler {
         } else if url.path.hasSuffix("tippabgabe") && query.contains("spieltagIndex=1") {
             html = Self.pastTipPage
         } else {
-            html = Self.tipForm
+            html = Self.tipForm.replacingOccurrences(of: #"name="spieltagIndex" value="2""#, with: #"name="spieltagIndex" value="\#(formMatchday)""#)
         }
         urlSchemeTask.didReceive(URLResponse(url: url, mimeType: "text/html", expectedContentLength: -1, textEncodingName: "utf-8"))
         urlSchemeTask.didReceive(Data(html.utf8))
@@ -138,12 +147,12 @@ final class WorkflowEndToEndTests {
             kicktippAutomation: automation
         )
         state.season = "2026"
-        state.codexRunCount = 12
-        XCTAssertEqual(state.codexRunCount, 9)
+        state.settings.codexRunCount = 12
+        XCTAssertEqual(state.settings.codexRunCount, 9)
         XCTAssertEqual(defaults.integer(forKey: "codexRunCount"), 9)
-        state.codexRunCount = 1
-        state.codexPath = codex.path
-        state.kicktippCompetitionSlug = "runde"
+        state.settings.codexRunCount = 1
+        state.settings.codexPath = codex.path
+        state.settings.kicktippCompetitionSlug = "runde"
 
         // 1. Generate: OpenLigaDB -> Kicktipp odds -> group history -> Codex -> model -> tips.
         await state.runWorkflow()
@@ -151,9 +160,11 @@ final class WorkflowEndToEndTests {
         XCTAssertEqual(state.suggestedTips.count, 2)
         XCTAssertTrue(state.suggestedTips.allSatisfy { $0.spieltag == 2 })
         XCTAssertEqual(state.currentSeasonCommunity.count, 1)
-        XCTAssertEqual(state.oddsArchive.filter { $0.spieltag == 1 }.count, 2)
-        XCTAssertEqual(state.oddsArchive.filter { $0.spieltag == 2 }.count, 2)
-        let ensemble = try XCTUnwrap(state.predictionRuns.last { $0.modelName == PredictionRun.ensembleModelName })
+        XCTAssertEqual(state.learning.oddsArchive.filter { $0.spieltag == 1 }.count, 2)
+        XCTAssertEqual(state.learning.oddsArchive.filter { $0.spieltag == 2 }.count, 2)
+        let stuttgartGladbach = try XCTUnwrap(state.learning.oddsArchive.first { $0.spieltag == 1 && $0.heim == "VfB Stuttgart" })
+        XCTAssertEqual(stuttgartGladbach.quoteGast, "2.50")
+        let ensemble = try XCTUnwrap(state.learning.predictionRuns.last { $0.modelName == PredictionRun.ensembleModelName })
         XCTAssertTrue(ensemble.matches.allSatisfy { $0.probabilityHomeWin != nil })
         // The market makes Stuttgart (1.75) the clear favourite.
         let stuttgart = try XCTUnwrap(state.suggestedTips.first { $0.gast == "VfB Stuttgart" })
@@ -165,6 +176,7 @@ final class WorkflowEndToEndTests {
         XCTAssertTrue(state.pendingKicktippOverwrites.isEmpty)
         let fields = try await automation.extractMatchFields()
         XCTAssertTrue(AppState.kicktippMismatches(expected: state.suggestedTips, fields: fields).isEmpty)
+        XCTAssertEqual(automation.formSpieltag, 2)
 
         // 3. Submit.
         await state.submitKicktippTips()
@@ -173,5 +185,11 @@ final class WorkflowEndToEndTests {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         XCTAssertTrue(server.requests.contains { $0.method == "POST" && $0.url.hasSuffix("/runde/tippabgabe") })
+
+        // 4. If Kicktipp shows another matchday, nothing may be entered.
+        server.formMatchday = 3
+        await state.loadKicktippMatchday()
+        await state.applyTipsToKicktipp()
+        XCTAssertTrue(state.errorMessage?.contains("Spieltag 3") == true)
     }
 }

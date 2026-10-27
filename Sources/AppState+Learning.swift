@@ -9,7 +9,7 @@ extension AppState {
             }
             self.syncManualKicktippTipsForLearning(from: self.kicktippMatchFields)
 
-            let seasons = Set(self.predictionRuns.compactMap { Int($0.seasonIdentifier) })
+            let seasons = Set(self.learning.predictionRuns.compactMap { Int($0.seasonIdentifier) })
             guard !seasons.isEmpty else {
                 self.infoMessage = "Keine auswertbaren Prediction-Runs vorhanden."
                 return
@@ -21,9 +21,9 @@ extension AppState {
             }
 
             let summary = self.predictionEvaluator.evaluateRuns(
-                self.predictionRuns,
+                self.learning.predictionRuns,
                 using: finishedBySeason,
-                previousState: self.learningState
+                previousState: self.learning.learningState
             )
             let runsWithClosingLines = await self.enrichEvaluatedRunsWithClosingLines(summary.runs)
             let finalSummary = self.predictionEvaluator.evaluateRuns(
@@ -31,8 +31,8 @@ extension AppState {
                 using: finishedBySeason,
                 previousState: summary.learningState
             )
-            self.predictionRuns = finalSummary.runs
-            self.learningState = finalSummary.learningState
+            self.learning.predictionRuns = finalSummary.runs
+            self.learning.learningState = finalSummary.learningState
             self.infoMessage = summary.evaluatedMatches == 0
                 ? "Keine neuen abgeschlossenen Spiele zum Bewerten gefunden."
                 : "\(summary.evaluatedMatches) Vorhersage(n) wurden bewertet."
@@ -40,8 +40,8 @@ extension AppState {
     }
 
     private func resetLearningData() {
-        predictionRuns = []
-        learningState = .empty
+        learning.predictionRuns = []
+        learning.learningState = .empty
         infoMessage = "Learning-Daten wurden zurueckgesetzt."
     }
 
@@ -50,21 +50,21 @@ extension AppState {
         await perform {
             let seasonValue = try self.parsedSeason()
             self.infoMessage = "Lade Saisons fuer den Backtest..."
-            let oldestArchived = self.oddsArchive.compactMap { Int($0.season) }.min() ?? seasonValue
+            let oldestArchived = self.learning.oddsArchive.compactMap { Int($0.season) }.min() ?? seasonValue
             let firstEvaluated = min(seasonValue - 4, oldestArchived)
             await self.loadHistoricalSeasons(before: seasonValue, count: seasonValue - firstEvaluated + 2)
             var seasons = self.historicalSeasons
             seasons[seasonValue] = self.finishedResults.isEmpty
                 ? try await self.ligaService.fetchFinishedMatches(season: seasonValue)
                 : self.finishedResults
-            let backtest = ModelBacktestService(rules: self.kicktippRules)
-            let archive = self.oddsArchive
+            let backtest = ModelBacktestService(rules: self.settings.kicktippRules)
+            let archive = self.learning.oddsArchive
             self.infoMessage = "Backtest laeuft..."
             let report = await Task.detached(priority: .userInitiated) {
                 backtest.run(seasons: seasons, oddsArchive: archive, evaluatedSeasons: firstEvaluated...seasonValue)
             }.value
             if let best = report.bestMarketWeight {
-                self.learnedMarketWeight = best
+                self.settings.learnedMarketWeight = best
             }
             self.backtestReport = report.summary
             self.appendConsole("[Backtest]\n\(report.summary)\n")
@@ -107,7 +107,7 @@ extension AppState {
     func runKickoffRefreshLoop() async {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 600_000_000_000)
-            guard autoRefreshBeforeKickoff, !isBusy, !suggestedTips.isEmpty else { continue }
+            guard settings.autoRefreshBeforeKickoff, !isBusy, !suggestedTips.isEmpty else { continue }
             let due = Self.matchesDueForKickoffRefresh(upcomingMatches, lastRefresh: lastKickoffRefresh, now: Date())
             guard !due.isEmpty else { continue }
             await perform { try await self.refreshTipsBeforeKickoff(due) }
@@ -120,14 +120,14 @@ extension AppState {
         let seasonKey = season.trimmingCharacters(in: .whitespacesAndNewlines)
         appendConsole("[Anstoss] Aktualisiere \(due.map { "\($0.heim)-\($0.gast)" }.joined(separator: ", ")) mit aktuellen Quoten.\n")
         var freshOdds: [BettingOdds] = []
-        if !theOddsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !settings.theOddsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let market = try await oddsAPIService.fetchAllMarketOdds()
             freshOdds = OddsRemapper.remapOddsToUpcomingMatches(market.h2h, upcomingMatches: upcomingMatches)
             let freshOverUnder = OddsRemapper.remapOverUnderToUpcomingMatches(market.overUnder, upcomingMatches: upcomingMatches)
             let freshKeys = Set(freshOverUnder.map { normalizedTeamKey($0.heim, $0.gast) })
             overUnderOdds = overUnderOdds.filter { !freshKeys.contains(normalizedTeamKey($0.heim, $0.gast)) } + freshOverUnder
         } else {
-            try kicktippAutomation.loadTippabgabe(for: kicktippCompetitionSlug)
+            try kicktippAutomation.loadTippabgabe(for: settings.kicktippCompetitionSlug)
             try await waitForKicktippPageToFinishLoading()
             freshOdds = OddsRemapper.remapOddsToUpcomingMatches(await kicktippAutomation.extractOddsFromPage().odds, upcomingMatches: upcomingMatches)
         }
@@ -160,7 +160,7 @@ extension AppState {
         importedResponse = tipWorkflowService.encodeTipsAsJSON(refreshed)
         importTipsFromResponse(probabilityModels: freshByKey.mapValues(\.model))
 
-        guard autoSubmitAfterRefresh else { return }
+        guard settings.autoSubmitAfterRefresh else { return }
         try await ensureKicktippMatchdayReadyForExtraction()
         let fields = try await kicktippAutomation.extractMatchFields()
         let updates = try buildKicktippUpdates(from: fields, requireAll: false)
@@ -206,7 +206,7 @@ extension AppState {
     func mergeIntoOddsArchive(_ snapshots: [ArchivedOdds]) {
         guard !snapshots.isEmpty else { return }
         let replaced = Set(snapshots.map { "\($0.season)|\($0.spieltag)|\(normalizedTeamKey($0.heim, $0.gast))" })
-        oddsArchive = oddsArchive.filter { !replaced.contains("\($0.season)|\($0.spieltag)|\(normalizedTeamKey($0.heim, $0.gast))") } + snapshots
+        learning.oddsArchive = learning.oddsArchive.filter { !replaced.contains("\($0.season)|\($0.spieltag)|\(normalizedTeamKey($0.heim, $0.gast))") } + snapshots
     }
 
     private func enrichEvaluatedRunsWithClosingLines(_ runs: [PredictionRun]) async -> [PredictionRun] {

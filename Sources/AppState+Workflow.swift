@@ -32,7 +32,7 @@ extension AppState {
             overUnderOdds = []
             bttsOdds = []
             handicapOdds = []
-            if !theOddsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !settings.theOddsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 do {
                     let allMarketOdds = try await oddsAPIService.fetchAllMarketOdds()
                     bettingOdds = OddsRemapper.remapOddsToUpcomingMatches(allMarketOdds.h2h, upcomingMatches: upcoming)
@@ -49,7 +49,7 @@ extension AppState {
 
             if bettingOdds.count < upcoming.count {
                 try await ensureKicktippMatchdayReadyForExtraction()
-                let kicktippOddsResult = await kicktippAutomation.extractOdds(competitionSlug: kicktippCompetitionSlug)
+                let kicktippOddsResult = await kicktippAutomation.extractOdds(competitionSlug: settings.kicktippCompetitionSlug)
                 appendConsole(kicktippOddsResult.log)
 
                 let remappedKicktippOdds = OddsRemapper.remapOddsToUpcomingMatches(kicktippOddsResult.odds, upcomingMatches: upcoming)
@@ -99,7 +99,7 @@ extension AppState {
                 matchWeather = []
             }
 
-            if !kicktippCompetitionSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !settings.kicktippCompetitionSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 infoMessage = "Lese Tipps und Quoten vergangener Spieltage..."
                 await syncCommunityTips(seasonValue: seasonValue)
                 await backfillKicktippOdds(seasonValue: seasonValue)
@@ -126,13 +126,13 @@ extension AppState {
                 teamMetadata: teamMetadata,
                 matchWeather: matchWeather,
                 llmMatchEnrichments: llmMatchEnrichments,
-                tipHistory: tipHistory,
-                learningState: learningState,
+                tipHistory: learning.tipHistory,
+                learningState: learning.learningState,
                 communitySummary: communityService.promptSummary(
                     matchdays: currentSeasonCommunity,
-                    rules: kicktippRules,
+                    rules: settings.kicktippRules,
                     backtest: communityBacktest,
-                    strategy: useRankingStrategy ? rankingStrategy : nil
+                    strategy: settings.useRankingStrategy ? rankingStrategy : nil
                 )
             )
 
@@ -162,7 +162,7 @@ extension AppState {
                 let storedOdds = storedOddsSnapshot(for: tips)
                 appendConsole("[Verlauf] \(tips.count) Tipps, \(storedOdds.count)/\(tips.count) Quoten gespeichert.\n")
                 appendConsole("[Verlauf] Kicktipp-Namen: \(bettingOdds.map { "\($0.heim) vs \($0.gast)" }.joined(separator: ", "))\n")
-                tipHistory.append(TipGenerationRecord(id: UUID(), timestamp: Date(), spieltag: spieltag, tips: tips, odds: storedOdds))
+                learning.tipHistory.append(TipGenerationRecord(id: UUID(), timestamp: Date(), spieltag: spieltag, tips: tips, odds: storedOdds))
             }
             recordPredictionRun(tips: tips, rawPrompt: generatedPrompt, rawResponse: importedResponse, probabilityModels: probabilityModels)
             infoMessage = "Tipps importiert."
@@ -172,7 +172,7 @@ extension AppState {
     }
 
     private func clearTipHistory() {
-        tipHistory = []
+        learning.tipHistory = []
     }
 
     private func fetchLLMMatchEnrichments(seasonValue: Int) async -> [LLMMatchEnrichment] {
@@ -222,7 +222,7 @@ extension AppState {
     }
 
     private func runPromptEnsembleWithCodex() async throws {
-        let runCount = codexRunCount
+        let runCount = settings.codexRunCount
         var successfulRuns: [(tips: [SuggestedTip], rawResponse: String, runIndex: Int)] = []
         var failedRuns = 0
 
@@ -293,7 +293,7 @@ extension AppState {
         )
         let stabilized = Self.stabilizeShortTermTips(
             aggregated.map(\.tip),
-            previousRuns: predictionRuns,
+            previousRuns: learning.predictionRuns,
             currentRuns: successfulRuns.map(\.tips),
             seasonIdentifier: season.trimmingCharacters(in: .whitespacesAndNewlines)
         )
@@ -380,7 +380,7 @@ extension AppState {
             )
         }
 
-        predictionRuns.append(
+        learning.predictionRuns.append(
             PredictionRun(
                 id: runId,
                 createdAt: createdAt,
@@ -402,7 +402,7 @@ extension AppState {
         let enrichmentsByKey = Dictionary(llmMatchEnrichments.map { (normalizedTeamKey($0.heim, $0.gast), $0) }, uniquingKeysWith: { first, _ in first })
         let targetSpieltag = upcomingMatches.first?.spieltag
         let seasonValue = season.trimmingCharacters(in: .whitespacesAndNewlines)
-        let historyForMatchday = tipHistory.filter {
+        let historyForMatchday = learning.tipHistory.filter {
             $0.spieltag == targetSpieltag && String(Self.currentBundesligaSeason(for: $0.timestamp)) == seasonValue
         }
 
@@ -503,9 +503,9 @@ extension AppState {
             overUnderOdds: overUnderOdds,
             playerAbsences: playerAbsences,
             llmMatchEnrichments: llmMatchEnrichments,
-            marketWeight: learnedMarketWeight,
+            marketWeight: settings.learnedMarketWeight,
             llmSignalWeight: learnedLLMSignalWeight(),
-            learningState: learningState
+            learningState: learning.learningState
         ))
     }
 
@@ -514,7 +514,7 @@ extension AppState {
     }
 
     private func decodedLearningWeights() -> LearningCorrectionWeights? {
-        try? JSONDecoder().decode(LearningCorrectionWeights.self, from: Data(learningState.weightsJSON.utf8))
+        try? JSONDecoder().decode(LearningCorrectionWeights.self, from: Data(learning.learningState.weightsJSON.utf8))
     }
 
     private func storedOddsSnapshot(for tips: [SuggestedTip]) -> [BettingOdds] {
@@ -553,7 +553,7 @@ extension AppState {
             (normalizedTeamKey($0.heim, $0.gast), "\($0.toreHeim):\($0.toreGast)")
         }, uniquingKeysWith: { first, _ in first })
 
-        return predictionRuns.contains { run in
+        return learning.predictionRuns.contains { run in
             guard run.modelName == modelName,
                   run.seasonIdentifier == season.trimmingCharacters(in: .whitespacesAndNewlines),
                   run.spieltag == tips.first?.spieltag,

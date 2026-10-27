@@ -7,22 +7,22 @@ extension ContentView {
         HStack(alignment: .top, spacing: 16) {
             card(title: "Lernstatus", icon: "chart.bar") {
                 VStack(alignment: .leading, spacing: 10) {
-                    metricRow("Bewertete Tipps", "\(state.learningState.sampleSize)")
-                    metricRow("Trefferquote Tendenz", percentage(state.learningState.tendencyHitRate))
-                    metricRow("Trefferquote exakt", percentage(state.learningState.exactHitRate))
-                    metricRow("Trefferquote Tordiff.", percentage(state.learningState.goalDiffHitRate))
-                    metricRow("Ø Torabweichung", String(format: "%.2f", state.learningState.averageTotalAbsGoalError))
-                    metricRow("Heim-Bias", signedPercentage(state.learningState.homeBias))
-                    metricRow("Remis-Bias", signedPercentage(state.learningState.drawBias))
-                    metricRow("Auswaerts-Bias", signedPercentage(state.learningState.awayBias))
+                    metricRow("Bewertete Tipps", "\(state.learning.learningState.sampleSize)")
+                    metricRow("Trefferquote Tendenz", percentage(state.learning.learningState.tendencyHitRate))
+                    metricRow("Trefferquote exakt", percentage(state.learning.learningState.exactHitRate))
+                    metricRow("Trefferquote Tordiff.", percentage(state.learning.learningState.goalDiffHitRate))
+                    metricRow("Ø Torabweichung", String(format: "%.2f", state.learning.learningState.averageTotalAbsGoalError))
+                    metricRow("Heim-Bias", signedPercentage(state.learning.learningState.homeBias))
+                    metricRow("Remis-Bias", signedPercentage(state.learning.learningState.drawBias))
+                    metricRow("Auswaerts-Bias", signedPercentage(state.learning.learningState.awayBias))
                 }
             }
             card(title: "Learning Summary", icon: "text.quote") {
-                if state.learningState.correctionSummaryText.isEmpty {
+                if state.learning.learningState.correctionSummaryText.isEmpty {
                     emptyState("Noch keine bewerteten Vorhersagen vorhanden.")
                 } else {
                     ScrollView {
-                        Text(state.learningState.correctionSummaryText)
+                        Text(state.learning.learningState.correctionSummaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     }
@@ -30,8 +30,8 @@ extension ContentView {
             }
             card(title: "Modell-Backtest", icon: "chart.line.uptrend.xyaxis") {
                 VStack(alignment: .leading, spacing: 8) {
-                    metricRow("Marktgewicht", String(format: "%.0f%%", state.learnedMarketWeight * 100))
-                    metricRow("Archivierte Quoten", "\(state.oddsArchive.count)")
+                    metricRow("Marktgewicht", String(format: "%.0f%%", state.settings.learnedMarketWeight * 100))
+                    metricRow("Archivierte Quoten", "\(state.learning.oddsArchive.count)")
                     HStack {
                         Button("Backtest ausfuehren") {
                             Task { await state.runModelBacktest() }

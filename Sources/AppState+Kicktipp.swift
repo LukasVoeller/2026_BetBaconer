@@ -4,7 +4,7 @@ import Foundation
 extension AppState {
     func initializeKicktipp() async {
         let loggedIn = await kicktippAutomation.isLoggedIn()
-        if loggedIn && !kicktippCompetitionSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if loggedIn && !settings.kicktippCompetitionSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             await loadKicktippMatchday()
         } else {
             openKicktippLogin()
@@ -19,7 +19,7 @@ extension AppState {
 
     func loadKicktippMatchday() async {
         await perform {
-            try self.kicktippAutomation.loadTippabgabe(for: self.kicktippCompetitionSlug)
+            try self.kicktippAutomation.loadTippabgabe(for: self.settings.kicktippCompetitionSlug)
             try await self.waitForKicktippPageToFinishLoading()
             let fields = try await self.kicktippAutomation.extractMatchFields()
             self.kicktippMatchFields = fields
@@ -144,6 +144,9 @@ extension AppState {
         if let nextSpieltag, nextSpieltag != tipMatchday {
             throw KicktippAutomationError.javaScriptError("Die Tipps gehoeren zu Spieltag \(tipMatchday), offen ist Spieltag \(nextSpieltag). Bitte neu generieren.")
         }
+        if let formSpieltag = kicktippAutomation.formSpieltag, formSpieltag != tipMatchday {
+            throw KicktippAutomationError.javaScriptError("Die Kicktipp-Seite zeigt Spieltag \(formSpieltag), die Tipps gehoeren zu Spieltag \(tipMatchday). Es wurde nichts eingetragen.")
+        }
 
         var updates: [(field: KicktippMatchField, tip: SuggestedTip)] = []
         var matchedTipIDs = Set<SuggestedTip.ID>()
@@ -200,7 +203,7 @@ extension AppState {
     }
 
     func ensureKicktippMatchdayReadyForExtraction() async throws {
-        let slug = kicktippCompetitionSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        let slug = settings.kicktippCompetitionSlug.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !slug.isEmpty else {
             throw KicktippAutomationError.invalidCompetitionSlug
         }
@@ -223,7 +226,7 @@ extension AppState {
             await self.syncCommunityTips(seasonValue: seasonValue)
             await self.backfillKicktippOdds(seasonValue: seasonValue)
             try await self.ensureKicktippMatchdayReadyForExtraction()
-            self.infoMessage = "\(self.currentSeasonCommunity.count) Spieltage mit Mitspieler-Tipps, \(self.oddsArchive.count) archivierte Quoten."
+            self.infoMessage = "\(self.currentSeasonCommunity.count) Spieltage mit Mitspieler-Tipps, \(self.learning.oddsArchive.count) archivierte Quoten."
         }
     }
 
@@ -231,11 +234,11 @@ extension AppState {
     /// Failures are logged and never abort the tip workflow.
     func syncCommunityTips(seasonValue: Int) async {
         let seasonKey = String(seasonValue)
-        let slug = kicktippCompetitionSlug
+        let slug = settings.kicktippCompetitionSlug
         let finishedMatchdays = Set(finishedResults.map(\.spieltag)).filter { matchday in
             nextSpieltag.map { matchday < $0 } ?? true
         }
-        let stored = Set(communityMatchdays.filter { $0.season == seasonKey }.map(\.spieltag))
+        let stored = Set(learning.communityMatchdays.filter { $0.season == seasonKey }.map(\.spieltag))
         let latest = finishedMatchdays.max()
         let toLoad = finishedMatchdays.filter { !stored.contains($0) || $0 == latest }.sorted()
         guard !toLoad.isEmpty else { return }
@@ -260,10 +263,10 @@ extension AppState {
         guard !loaded.isEmpty else { return }
 
         let replaced = Set(loaded.map(\.spieltag))
-        communityMatchdays = communityMatchdays.filter { $0.season != seasonKey || !replaced.contains($0.spieltag) } + loaded
+        learning.communityMatchdays = learning.communityMatchdays.filter { $0.season != seasonKey || !replaced.contains($0.spieltag) } + loaded
         appendConsole("[Mitspieler] \(loaded.count) Spieltag(e) gelesen, \(currentSeasonCommunity.count) gespeichert.\n")
 
-        if let inferred = inferredKicktippRules, inferred.rules != kicktippRules {
+        if let inferred = inferredKicktippRules, inferred.rules != settings.kicktippRules {
             let rules = inferred.rules
             appendConsole(String(
                 format: "[Mitspieler] Erkannte Punkteregel %.0f/%.0f/%.0f, Remis-Tordifferenz %@ (aus %d Tipps) weicht von den Einstellungen ab.\n",
@@ -277,14 +280,14 @@ extension AppState {
     /// Reads the odds Kicktipp shows on the tip page of finished matchdays that are not archived yet.
     func backfillKicktippOdds(seasonValue: Int) async {
         let seasonKey = String(seasonValue)
-        let archived = Set(oddsArchive.filter { $0.season == seasonKey }.map(\.spieltag))
+        let archived = Set(learning.oddsArchive.filter { $0.season == seasonKey }.map(\.spieltag))
         let missing = Set(finishedResults.map(\.spieltag))
             .filter { matchday in !archived.contains(matchday) && (nextSpieltag.map { matchday < $0 } ?? true) }
             .sorted()
         var stored = 0
         for spieltag in missing {
             do {
-                try kicktippAutomation.loadTippabgabe(for: kicktippCompetitionSlug, spieltag: spieltag)
+                try kicktippAutomation.loadTippabgabe(for: settings.kicktippCompetitionSlug, spieltag: spieltag)
                 try await waitForKicktippPageToFinishLoading(urlContaining: "spieltagIndex=\(spieltag)")
             } catch {
                 appendConsole("[Quoten-Archiv] Spieltag \(spieltag) nicht geladen: \(error.localizedDescription)\n")
@@ -309,13 +312,13 @@ extension AppState {
             stored += snapshots.count
         }
         if stored > 0 {
-            appendConsole("[Quoten-Archiv] \(stored) historische Quoten aus Kicktipp gespeichert (gesamt \(oddsArchive.count)).\n")
+            appendConsole("[Quoten-Archiv] \(stored) historische Quoten aus Kicktipp gespeichert (gesamt \(learning.oddsArchive.count)).\n")
         }
     }
 
     func adoptInferredKicktippRules() {
         guard let inferred = inferredKicktippRules else { return }
-        kicktippRules = inferred.rules
+        settings.kicktippRules = inferred.rules
         infoMessage = "Punkteregel aus den Mitspieler-Tipps uebernommen."
     }
 }

@@ -14,7 +14,9 @@ Der Nutzer soll mit einem einzigen Klick KI-gestützte Tipps in sein Kicktipp-Ko
 
 ## Architektur
 
-- **AppState** (`AppState.swift`) — zentraler `@MainActor @Observable` State (Einstellungen, Daten, Persistenz, `perform`/`isBusy` gegen parallele Vorgänge); Abläufe in Extensions:
+- **AppSettings** (`AppSettings.swift`) — persistente Einstellungen (UserDefaults, Keychain, Migration der `swift run`-Einstellungen)
+- **LearningRepository** (`LearningRepository.swift`) — Tipp-Verlauf, Prediction-Runs, Learning-State, Mitspieler-Historie, Quoten-Archiv; lädt einmal, speichert bei Änderung, überschreibt nie unlesbare Dateien
+- **AppState** (`AppState.swift`) — `@MainActor @Observable`-Koordinator: Spieltagsdaten, UI-Status, `perform`/`isBusy` gegen parallele Vorgänge; nutzt `settings` und `learning`. Abläufe in Extensions:
   - `AppState+Workflow.swift` — Datenladen, Codex-Ensemble, Tipp-Auswahl, Prediction-Records
   - `AppState+Kicktipp.swift` — Tippformular, Absenden, Tippübersicht und Quoten vergangener Spieltage
   - `AppState+Learning.swift` — Auswertung, Quoten-Archiv, Backtest, CSV-Import, Aktualisierung vor Anstoß
@@ -59,6 +61,7 @@ NavigationSplitView
 - Abhängigkeiten (UserDefaults, URLSession, Stores, Keychain, Kicktipp-Basis-URL/WebView-Konfiguration) werden über `AppDependencies` bzw. `KicktippAutomation(baseURL:configuration:)` injiziert; Tests nutzen nie echte Nutzerdaten
 - Unter `@Observable` keine Property im eigenen `didSet` neu zuweisen (Endlosrekursion); stattdessen eigener Setter
 - Drittanbieter-Text im Prompt immer über `promptSafe(_:)` bzw. `sanitizedPlayerName(_:)`
+- Kicktipp-DOM: Fixture `Tests/BetBaconerTests/Fixtures/kicktipp-tippuebersicht-st7.html` ist eine anonymisierte Kopie der echten Seite; Formular-Selektoren mit anderen Kicktipp-Projekten abgeglichen (`#tippabgabeSpiele`, `input[id$="_heimTipp"]`, Quoten als Text `1.85 / 3.90 / 4.10`, `input[name="spieltagIndex"]`)
 - Teamnamen immer über `normalizedTeamKey` / `matchesLikelyEqual` vergleichen, nie per String-Gleichheit
 - Änderungen an der Tipp-Auswahl erhöhen `AppState.promptVersion`
 - Modelländerungen nur mit Backtest-Beleg (`Learning > Backtest ausführen`, mit importierten football-data-CSVs); aktueller Stand: Markt-EV 1,343 Punkte/Tipp vs. Faustregel 1,290

@@ -27,6 +27,8 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
     var isPageLoading: Bool = false
     private(set) var cachedOdds: [BettingOdds] = []
     private(set) var cachedOddsLog: String = ""
+    /// Matchday of the tip form read last (hidden `spieltagIndex` field), nil if the page does not show it.
+    private(set) var formSpieltag: Int?
 
     /// Kicktipp origin; tests point it at a local scheme handler that serves Kicktipp-like pages.
     let baseURL: URL
@@ -175,11 +177,17 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
               '.quotegast .quote-text',
             ];
 
-            let heimQuote = normalizeQuote(row.querySelector(selectorCandidates[0])?.textContent)
+            // Kicktipp shows the odds as one text "1.85 / 3.90 / 4.10"; equal values must not collapse.
+            const slashOdds = (row.innerText || '').match(/(\d+[.,]\d+)\s*\/\s*(\d+[.,]\d+)\s*\/\s*(\d+[.,]\d+)/);
+
+            let heimQuote = (slashOdds && normalizeQuote(slashOdds[1]))
+              || normalizeQuote(row.querySelector(selectorCandidates[0])?.textContent)
               || normalizeQuote(row.querySelector(selectorCandidates[3])?.textContent);
-            let drawQuote = normalizeQuote(row.querySelector(selectorCandidates[1])?.textContent)
+            let drawQuote = (slashOdds && normalizeQuote(slashOdds[2]))
+              || normalizeQuote(row.querySelector(selectorCandidates[1])?.textContent)
               || normalizeQuote(row.querySelector(selectorCandidates[4])?.textContent);
-            let gastQuote = normalizeQuote(row.querySelector(selectorCandidates[2])?.textContent)
+            let gastQuote = (slashOdds && normalizeQuote(slashOdds[3]))
+              || normalizeQuote(row.querySelector(selectorCandidates[2])?.textContent)
               || normalizeQuote(row.querySelector(selectorCandidates[5])?.textContent);
 
             if (!heimQuote || !drawQuote || !gastQuote) {
@@ -336,7 +344,11 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
             };
           });
 
-          return JSON.stringify({ matches, strategy: usedStrategy });
+          // The form posts its matchday in a hidden field; the page title is the fallback.
+          const hidden = document.querySelector('input[name="spieltagIndex"]')?.value;
+          const title = (document.querySelector('.prevnextTitle')?.textContent || '').match(/(\d+)\.\s*Spieltag/);
+          const spieltag = parseInt(hidden || (title && title[1]) || '', 10);
+          return JSON.stringify({ matches, strategy: usedStrategy, spieltag: Number.isFinite(spieltag) ? spieltag : null });
         })();
         """#
 
@@ -354,8 +366,10 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
         // Parse successful result
         struct Result: Decodable {
             let matches: [KicktippMatchField]
+            let spieltag: Int?
         }
         let result = try JSONDecoder().decode(Result.self, from: data)
+        formSpieltag = result.spieltag
         if result.matches.isEmpty {
             throw KicktippAutomationError.noBettingFieldsFound(debugInfo: "Matches array empty. URL: \(webView.url?.absoluteString ?? "unknown")")
         }

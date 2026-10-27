@@ -275,7 +275,7 @@ struct ContentView: View {
                 }
             }
             .frame(width: 320)
-        } else if !state.tipHistory.isEmpty {
+        } else if !state.learning.tipHistory.isEmpty {
             card(title: "Verlauf", icon: "clock.arrow.trianglehead.counterclockwise.rotate.90") {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {

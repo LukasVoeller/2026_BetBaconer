@@ -231,12 +231,12 @@ extension ReviewRegressionTests {
         let legacy = UserDefaults(suiteName: "BBT-legacy-\(UUID().uuidString)")!
         legacy.set("meine-runde", forKey: "kicktippCompetitionSlug")
         let fresh = UserDefaults(suiteName: "BBT-fresh-\(UUID().uuidString)")!
-        AppState.migrateLegacySettings(from: legacy, to: fresh)
+        AppSettings.migrateLegacySettings(from: legacy, to: fresh)
         XCTAssertEqual(fresh.string(forKey: "kicktippCompetitionSlug"), "meine-runde")
 
         let used = UserDefaults(suiteName: "BBT-used-\(UUID().uuidString)")!
         used.set("andere-runde", forKey: "kicktippCompetitionSlug")
-        AppState.migrateLegacySettings(from: legacy, to: used)
+        AppSettings.migrateLegacySettings(from: legacy, to: used)
         XCTAssertEqual(used.string(forKey: "kicktippCompetitionSlug"), "andere-runde")
     }
 }

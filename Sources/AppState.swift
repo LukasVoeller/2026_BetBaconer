@@ -18,79 +18,10 @@ struct AppDependencies {
 @Observable
 final class AppState {
 
-    // MARK: - Keys
-
-    private enum Keys {
-        static let codexRunCount                = "codexRunCount"
-        static let kicktippCompetitionSlug      = "kicktippCompetitionSlug"
-        static let codexPath                    = "codexPath"
-        static let kicktippRules                = "kicktippRules"
-        static let kicktippPlayerName           = "kicktippPlayerName"
-        static let useRankingStrategy           = "useRankingStrategy"
-        static let learnedMarketWeight          = "learnedMarketWeight"
-        static let autoRefreshBeforeKickoff     = "autoRefreshBeforeKickoff"
-        static let autoSubmitAfterRefresh       = "autoSubmitAfterRefresh"
-    }
-
-    private enum SecretKeys {
-        static let theOddsAPIKey = "theOddsAPIKey"
-    }
-
     // MARK: - State
 
     var season: String = String(AppState.currentBundesligaSeason())
-    // Persisted settings: loaded from `defaults` in init, written back on change.
-    /// Number of Codex runs per analysis, always 1...9. (Re-assigning inside didSet recurses under @Observable.)
-    var codexRunCount: Int {
-        get { storedCodexRunCount }
-        set {
-            storedCodexRunCount = min(max(newValue, 1), 9)
-            defaults.set(storedCodexRunCount, forKey: Keys.codexRunCount)
-        }
-    }
-    private var storedCodexRunCount = 1
-    var kicktippCompetitionSlug: String = "" {
-        didSet { defaults.set(kicktippCompetitionSlug, forKey: Keys.kicktippCompetitionSlug) }
-    }
-    var theOddsAPIKey: String = "" {
-        didSet {
-            do {
-                let trimmed = theOddsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty {
-                    try secretStore.deleteSecret(account: SecretKeys.theOddsAPIKey)
-                } else {
-                    try secretStore.saveSecret(trimmed, account: SecretKeys.theOddsAPIKey)
-                }
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-    var codexPath: String = "/opt/homebrew/bin/codex" {
-        didSet { defaults.set(codexPath, forKey: Keys.codexPath) }
-    }
-    var kicktippRules: KicktippRules = .standard {
-        didSet { defaults.set(try? JSONEncoder().encode(kicktippRules), forKey: Keys.kicktippRules) }
-    }
-    /// Own player name in the Kicktipp group, used to locate the ranking position.
-    var kicktippPlayerName: String = "" {
-        didSet { defaults.set(kicktippPlayerName, forKey: Keys.kicktippPlayerName) }
-    }
-    var useRankingStrategy: Bool = false {
-        didSet { defaults.set(useRankingStrategy, forKey: Keys.useRankingStrategy) }
-    }
-    /// Share of the bookmaker market in expected goals; learned from the odds archive by the backtest.
-    var learnedMarketWeight: Double = ModelBacktestService.defaultMarketWeight {
-        didSet { defaults.set(learnedMarketWeight, forKey: Keys.learnedMarketWeight) }
-    }
     var backtestReport = ""
-    /// Recompute tips about an hour before kickoff with the latest (most accurate) odds.
-    var autoRefreshBeforeKickoff: Bool = false {
-        didSet { defaults.set(autoRefreshBeforeKickoff, forKey: Keys.autoRefreshBeforeKickoff) }
-    }
-    var autoSubmitAfterRefresh: Bool = false {
-        didSet { defaults.set(autoSubmitAfterRefresh, forKey: Keys.autoSubmitAfterRefresh) }
-    }
     var lastKickoffRefresh: [String: Date] = [:]
     var generatedPrompt: String = ""
     var importedResponse: String = ""
@@ -118,44 +49,25 @@ final class AppState {
     var llmMatchEnrichments: [LLMMatchEnrichment] = []
     var matchExpectedGoals: [MatchExpectedGoals] = []
     var nextSpieltag: Int?
-    var tipHistory: [TipGenerationRecord] = [] {
-        didSet {
-            persistTipHistory()
-        }
-    }
     var latestTipHistory: [TipGenerationRecord] {
-        Self.latestTipHistory(from: tipHistory)
-    }
-    var predictionRuns: [PredictionRun] = [] {
-        didSet { persistLearningStore() }
+        Self.latestTipHistory(from: learning.tipHistory)
     }
     var evaluatedMatchdayRuns: [PredictionRun] {
-        Self.evaluatedMatchdayRuns(from: predictionRuns)
-    }
-    var learningState: LearningState = .empty {
-        didSet { persistLearningStore() }
-    }
-    /// Every odds snapshot the app has seen (latest per match), the basis for learning the market weight.
-    var oddsArchive: [ArchivedOdds] = [] {
-        didSet { persistLearningStore() }
+        Self.evaluatedMatchdayRuns(from: learning.predictionRuns)
     }
     /// Finished matches of earlier seasons (start year -> matches) for the rating model and backtests.
     var historicalSeasons: [Int: [FinishedMatch]] = [:]
-    /// Fellow players' tips of finished matchdays, read from the Kicktipp tip overview.
-    var communityMatchdays: [CommunityMatchday] = [] {
-        didSet { persistLearningStore() }
-    }
     var currentSeasonCommunity: [CommunityMatchday] {
-        communityMatchdays.filter { $0.season == season.trimmingCharacters(in: .whitespacesAndNewlines) }
+        learning.communityMatchdays.filter { $0.season == season.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
     var inferredKicktippRules: InferredKicktippRules? {
         communityService.inferRules(from: currentSeasonCommunity)
     }
     var communityBacktest: [CommunityBacktestRow] {
-        communityService.backtest(runs: predictionRuns, matchdays: currentSeasonCommunity, rules: kicktippRules)
+        communityService.backtest(runs: learning.predictionRuns, matchdays: currentSeasonCommunity, rules: settings.kicktippRules)
     }
     var rankingStrategy: RankingStrategy? {
-        let name = kicktippPlayerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = settings.kicktippPlayerName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, let nextSpieltag else { return nil }
         return communityService.rankingStrategy(playerName: name, matchdays: currentSeasonCommunity, nextSpieltag: nextSpieltag)
     }
@@ -163,16 +75,17 @@ final class AppState {
     /// Kicktipp fields that already hold a different tip and would be overwritten; non-empty asks the UI for confirmation.
     var pendingKicktippOverwrites: [String] = []
     /// Set when a store could not be loaded nor backed up; saving would destroy the unreadable file.
-    private var tipHistoryPersistenceDisabled = false
-    private var learningPersistenceDisabled = false
     var errorMessage: String?
     var infoMessage: String?
 
     let kicktippAutomation: KicktippAutomation
+    /// Persisted user settings (UserDefaults + keychain).
+    let settings: AppSettings
+    /// Persisted learning data: tip history, prediction runs, group history, odds archive.
+    let learning: LearningRepository
 
     // MARK: - Services
 
-    let defaults: UserDefaults
     let session: URLSession
     let ligaService: OpenLigaDBService
     let tipWorkflowService = TipWorkflowService()
@@ -180,27 +93,24 @@ final class AppState {
     let teamMetadataService: TheSportsDBService
     let weatherService: WeatherService
     let teamRatingService = TeamRatingService()
-    let predictionStore: PredictionStore
     let predictionEvaluator = PredictionEvaluator()
     let communityService = KicktippCommunityService()
     var ensembleService: EnsembleService {
-        var service = EnsembleService(rules: kicktippRules)
+        var service = EnsembleService(rules: settings.kicktippRules)
         let community = currentSeasonCommunity
         if !community.isEmpty {
             service.crowdTipHomeFavorite = communityService.typicalCrowdTip(homeFavored: true, matchdays: community)
             service.crowdTipAwayFavorite = communityService.typicalCrowdTip(homeFavored: false, matchdays: community)
         }
-        if useRankingStrategy {
+        if settings.useRankingStrategy {
             service.strategy = rankingStrategy
         }
         return service
     }
     let codexRunner = CodexRunner()
-    let secretStore: KeychainSecretStore
-    let tipHistoryStore: TipHistoryStore
 
     var oddsAPIService: TheOddsAPIService {
-        TheOddsAPIService(apiKey: theOddsAPIKey, session: session)
+        TheOddsAPIService(apiKey: settings.theOddsAPIKey, session: session)
     }
 
     // MARK: - Init
@@ -336,94 +246,49 @@ final class AppState {
     }
 
     init(dependencies: AppDependencies = AppDependencies(), kicktippAutomation: KicktippAutomation = KicktippAutomation()) {
-        defaults = dependencies.defaults
         session = dependencies.session
         ligaService = OpenLigaDBService(session: dependencies.session)
         sofaScoreService = SofaScoreService(session: dependencies.session)
         teamMetadataService = TheSportsDBService(session: dependencies.session)
         weatherService = WeatherService(session: dependencies.session)
-        predictionStore = dependencies.predictionStore
-        tipHistoryStore = dependencies.tipHistoryStore
-        secretStore = dependencies.secretStore
+        learning = LearningRepository(predictionStore: dependencies.predictionStore, tipHistoryStore: dependencies.tipHistoryStore)
         self.kicktippAutomation = kicktippAutomation
+        settings = AppSettings(
+            defaults: dependencies.defaults,
+            secretStore: dependencies.secretStore,
+            environment: dependencies.environment,
+            legacyDefaultsDomain: dependencies.legacyDefaultsDomain
+        )
+        errorMessage = settings.loadError
 
-        if let legacyDomain = dependencies.legacyDefaultsDomain, let legacy = UserDefaults(suiteName: legacyDomain) {
-            Self.migrateLegacySettings(from: legacy, to: defaults)
+        if let latestTips = learning.tipHistory.last {
+            suggestedTips = latestTips.tips
+            bettingOdds = latestTips.odds
         }
-
-        let storedRunCount = defaults.integer(forKey: Keys.codexRunCount)
-        storedCodexRunCount = min(max(storedRunCount == 0 ? 1 : storedRunCount, 1), 9)
-        kicktippCompetitionSlug = defaults.string(forKey: Keys.kicktippCompetitionSlug) ?? ""
-        codexPath = defaults.string(forKey: Keys.codexPath) ?? "/opt/homebrew/bin/codex"
-        kicktippRules = defaults.data(forKey: Keys.kicktippRules)
-            .flatMap { try? JSONDecoder().decode(KicktippRules.self, from: $0) } ?? .standard
-        kicktippPlayerName = defaults.string(forKey: Keys.kicktippPlayerName) ?? ""
-        useRankingStrategy = defaults.bool(forKey: Keys.useRankingStrategy)
-        learnedMarketWeight = (defaults.object(forKey: Keys.learnedMarketWeight) as? Double) ?? ModelBacktestService.defaultMarketWeight
-        autoRefreshBeforeKickoff = defaults.bool(forKey: Keys.autoRefreshBeforeKickoff)
-        autoSubmitAfterRefresh = defaults.bool(forKey: Keys.autoSubmitAfterRefresh)
-
-        let environmentKey = dependencies.environment["THE_ODDS_API_KEY"]
-        do {
-            theOddsAPIKey = try secretStore.loadSecret(account: SecretKeys.theOddsAPIKey) ?? environmentKey ?? ""
-        } catch {
-            theOddsAPIKey = environmentKey ?? ""
-            errorMessage = error.localizedDescription
+        if !suggestedTips.isEmpty {
+            importedResponse = tipWorkflowService.encodeTipsAsJSON(suggestedTips)
         }
-
-        do {
-            tipHistory = try tipHistoryStore.load()
-            if let latestTips = tipHistory.last {
-                suggestedTips = latestTips.tips
-                bettingOdds = latestTips.odds
-            }
-            if !suggestedTips.isEmpty {
-                importedResponse = tipWorkflowService.encodeTipsAsJSON(suggestedTips)
-            }
-        } catch {
-            errorMessage = error.localizedDescription
-            if case .failedToLoad(backup: nil)? = error as? TipHistoryStoreError {
-                tipHistoryPersistenceDisabled = true
-            }
+        restoreUpcomingMatchesFromLatestTips()
+        if let loadError = learning.loadErrors.last {
+            errorMessage = loadError
         }
-
-        do {
-            let loaded = try predictionStore.load()
-            predictionRuns = loaded.runs
-            learningState = loaded.learningState
-            communityMatchdays = loaded.community
-            oddsArchive = loaded.oddsArchive
-            restoreUpcomingMatchesFromLatestTips()
-        } catch {
-            errorMessage = error.localizedDescription
-            if case .failedToLoad(backup: nil)? = error as? PredictionStoreError {
-                learningPersistenceDisabled = true
-            }
-        }
+        learning.onSaveError = { [weak self] message in self?.appendConsole(message) }
+        settings.onError = { [weak self] message in self?.errorMessage = message }
     }
 
     // MARK: - Shared helpers
 
-    /// Copies settings saved by the unbundled binary when the bundled app has none yet.
-    static func migrateLegacySettings(from legacy: UserDefaults, to defaults: UserDefaults) {
-        let keys = [Keys.codexRunCount, Keys.kicktippCompetitionSlug, Keys.codexPath, Keys.kicktippRules, Keys.kicktippPlayerName,
-                    Keys.useRankingStrategy, Keys.learnedMarketWeight, Keys.autoRefreshBeforeKickoff, Keys.autoSubmitAfterRefresh]
-        guard keys.allSatisfy({ defaults.object(forKey: $0) == nil }) else { return }
-        for key in keys {
-            if let value = legacy.object(forKey: key) { defaults.set(value, forKey: key) }
-        }
-    }
 
     private func restoreUpcomingMatchesFromLatestTips() {
-        guard upcomingMatches.isEmpty, let latestTips = tipHistory.last else { return }
-        upcomingMatches = Self.upcomingMatchesForLatestTips(latestTips, predictionRuns: predictionRuns)
+        guard upcomingMatches.isEmpty, let latestTips = learning.tipHistory.last else { return }
+        upcomingMatches = Self.upcomingMatchesForLatestTips(latestTips, predictionRuns: learning.predictionRuns)
         nextSpieltag = upcomingMatches.map(\.spieltag).min()
     }
 
     /// Model probabilities of the newest ensemble run for this match (manual and single Codex runs carry none).
     func latestEnsemblePrediction(for tip: SuggestedTip) -> MatchPrediction? {
         let key = normalizedTeamKey(tip.heim, tip.gast)
-        return predictionRuns
+        return learning.predictionRuns
             .filter { $0.modelName == PredictionRun.ensembleModelName && $0.spieltag == tip.spieltag }
             .max { $0.createdAt < $1.createdAt }?
             .matches
@@ -480,24 +345,6 @@ final class AppState {
             }
         } catch {
             errorMessage = error.localizedDescription
-        }
-    }
-
-    private func persistLearningStore() {
-        guard !learningPersistenceDisabled else { return }
-        do {
-            try predictionStore.save(runs: predictionRuns, learningState: learningState, community: communityMatchdays, oddsArchive: oddsArchive)
-        } catch {
-            appendConsole("[Learning] Persistenz fehlgeschlagen: \(error.localizedDescription)\n")
-        }
-    }
-
-    private func persistTipHistory() {
-        guard !tipHistoryPersistenceDisabled else { return }
-        do {
-            try tipHistoryStore.save(tipHistory)
-        } catch {
-            appendConsole("[Verlauf] Persistenz fehlgeschlagen: \(error.localizedDescription)\n")
         }
     }
 

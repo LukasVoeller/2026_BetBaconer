@@ -158,7 +158,7 @@ extension ContentView {
     private var learningCard: some View {
         card(title: "Self-Learning", icon: "brain.head.profile") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("\(state.learningState.sampleSize) bewertete Tipps")
+                Text("\(state.learning.learningState.sampleSize) bewertete Tipps")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -184,7 +184,7 @@ extension ContentView {
                         fullWidthButtonLabel("Kicktipp-Historie laden")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(state.isBusy || state.kicktippCompetitionSlug.isEmpty)
+                    .disabled(state.isBusy || state.settings.kicktippCompetitionSlug.isEmpty)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
