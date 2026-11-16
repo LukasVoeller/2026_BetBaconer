@@ -328,15 +328,15 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
             const guestInput = guestInputs[i];
             // Walk up to the row to find team name cells
             const row = homeInput.closest('tr');
-            const cells = row ? Array.from(row.querySelectorAll('td')) : [];
+            const cells = row ? Array.from(row.querySelectorAll(':scope > td')) : [];
             // Try to find team name cells: skip cells that contain only numbers/odds/inputs
             const textCells = cells.filter(td => {
               const t = (td.innerText || '').trim();
               return t.length > 2 && !/^[\d.:,\s]+$/.test(t) && !td.querySelector('input');
             });
             return {
-              heim: (textCells[0]?.innerText || '').trim(),
-              gast: (textCells[1]?.innerText || '').trim(),
+              heim: (row?.querySelector('.col1')?.innerText || textCells[0]?.innerText || '').trim(),
+              gast: (row?.querySelector('.col2')?.innerText || textCells[1]?.innerText || '').trim(),
               heimField: homeInput.name || homeInput.id,
               gastField: guestInput.name || guestInput.id,
               existingHeim: homeInput.value || '',
@@ -396,8 +396,8 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
           const missing = [];
           let applied = 0;
           for (const update of updates) {
-            const homeInput = document.getElementsByName(update.heimField)[0];
-            const guestInput = document.getElementsByName(update.gastField)[0];
+            const homeInput = document.getElementsByName(update.heimField)[0] || document.getElementById(update.heimField);
+            const guestInput = document.getElementsByName(update.gastField)[0] || document.getElementById(update.gastField);
             if (!homeInput || !guestInput) {
               missing.push(update.heimField + '/' + update.gastField);
               continue;
@@ -506,11 +506,18 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
         try await evaluateJavaScriptVoid(script)
     }
 
+    nonisolated static func javaScriptError(_ error: Error) -> KicktippAutomationError {
+        let info = (error as NSError).userInfo
+        let message = info["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
+        let line = (info["WKJavaScriptExceptionLineNumber"] as? NSNumber).map { " (JavaScript-Zeile \($0))" } ?? ""
+        return .javaScriptError(message + line)
+    }
+
     private func evaluateJavaScriptString(_ script: String) async throws -> String {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
             webView.evaluateJavaScript(script) { result, error in
                 if let error {
-                    continuation.resume(throwing: KicktippAutomationError.javaScriptError(error.localizedDescription))
+                    continuation.resume(throwing: Self.javaScriptError(error))
                 } else if let value = result as? String {
                     continuation.resume(returning: value)
                 } else {
@@ -524,7 +531,7 @@ final class KicktippAutomation: NSObject, WKNavigationDelegate {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             webView.evaluateJavaScript(script) { _, error in
                 if let error {
-                    continuation.resume(throwing: KicktippAutomationError.javaScriptError(error.localizedDescription))
+                    continuation.resume(throwing: Self.javaScriptError(error))
                 } else {
                     continuation.resume(returning: ())
                 }

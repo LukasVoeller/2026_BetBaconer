@@ -11,13 +11,14 @@ final class KicktippAutomationTests {
     <form id="tippabgabeForm">
       <table id="tippabgabeSpiele"><tbody>
         <tr class="datarow">
+          <td class="col0">Fr., 16.10.2026 20:30</td>
           <td class="col1">VfB Stuttgart</td><td class="col2">Borussia Mönchengladbach</td>
           <td><input id="s1_heimTipp" name="spieltippForms[1].heimTipp" value=""><input id="s1_gastTipp" name="spieltippForms[1].gastTipp" value=""></td>
           <td class="tippabgabe-quoten"><span class="quoteheim"><span class="quote-text">1,85</span></span><span class="quoteremis"><span class="quote-text">3,90</span></span><span class="quotegast"><span class="quote-text">4,10</span></span></td>
         </tr>
         <tr class="datarow">
           <td class="col1">RB Leipzig</td><td class="col2">SV 07 Elversberg</td>
-          <td><input id="s2_heimTipp" name="spieltippForms[2].heimTipp" value="1"><input id="s2_gastTipp" name="spieltippForms[2].gastTipp" value="1"></td>
+          <td><input id="s2_heimTipp" value="1"><input id="s2_gastTipp" value="1"></td>
           <td class="tippabgabe-quoten"><span class="quoteheim"><span class="quote-text">1,30</span></span><span class="quoteremis"><span class="quote-text">5,75</span></span><span class="quotegast"><span class="quote-text">9,50</span></span></td>
         </tr>
       </tbody></table>
@@ -45,6 +46,7 @@ final class KicktippAutomationTests {
         let fields = try await automation.extractMatchFields()
         XCTAssertEqual(fields.count, 2)
         XCTAssertEqual(fields[0].heim, "VfB Stuttgart")
+        XCTAssertEqual(fields[0].gast, "Borussia Mönchengladbach")
         XCTAssertEqual(fields[1].existingHeim, "1")
 
         let tips = [
@@ -55,6 +57,15 @@ final class KicktippAutomationTests {
 
         let readBack = try await automation.extractMatchFields()
         XCTAssertTrue(AppState.kicktippMismatches(expected: tips, fields: readBack).isEmpty)
+    }
+
+    @Test
+    func testPreservesJavaScriptExceptionDetails() {
+        let error = NSError(domain: WKError.errorDomain, code: WKError.javaScriptExceptionOccurred.rawValue,
+                            userInfo: ["WKJavaScriptExceptionMessage": "Error: Feld fehlt", "WKJavaScriptExceptionLineNumber": 12])
+        let result = KicktippAutomation.javaScriptError(error)
+        XCTAssertTrue(result.localizedDescription.contains("Feld fehlt"))
+        XCTAssertTrue(result.localizedDescription.contains("12"))
     }
 
     @Test

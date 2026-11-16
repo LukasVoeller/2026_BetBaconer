@@ -14,7 +14,7 @@ Native macOS-App fuer Bundesliga-Tipps in Kicktipp.
 - Waehlt pro Spiel das Ergebnis mit den meisten erwarteten Kicktipp-Punkten (Dixon-Coles/Poisson-Modell, Punkteregel der Tipprunde).
 - Liest die Tipps der Mitspieler vergangener Spieltage aus der Kicktipp-Tippuebersicht.
 - Speichert Tipps und Learning-Daten lokal.
-- Traegt Tipps in Kicktipp ein und kann sie absenden.
+- Traegt Tipps in Kicktipp ein und kann sie absenden. Formularfelder werden ueber Namen oder ID angesprochen; JavaScript-Fehler zeigen Ursache und Zeile. Teamnamen werden vorrangig aus den Teamspalten gelesen, damit Datumszellen den Spielabgleich nicht verschieben.
 
 ## Was Die App Nicht Macht
 
